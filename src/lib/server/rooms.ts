@@ -302,22 +302,66 @@ export async function joinRoom(
   if (room.status === "finished") throw new ApiError(409, "This game has already finished");
 
   const players = await getPlayers(room.id);
+  const wanted = typeof teamId === "string" ? teamId : null;
+  const device = cleanUid(uid);
+
+  // One device gets one seat per room. Joining twice from the same browser is
+  // not a second player, it is the same person trying again — because the
+  // network dropped the first answer, or because the tab lost its identity, or
+  // because they simply reloaded. Handing back the seat they already own is the
+  // difference between that being a non-event and it being the bug that filled
+  // a lobby with eleven copies of the same person, each with another " 2"
+  // stapled to their name.
+  const seat = findSeat(players, device);
+  if (seat) return { state: await getState(room.code), identity: await reissue(room, seat, wanted) };
+
   if (players.length >= MAX_PLAYERS) throw new ApiError(409, "This room is full");
 
-  const wanted = typeof teamId === "string" ? teamId : null;
   const team =
     room.teams.find((t) => t.id === wanted) ?? smallestTeam(room.teams, players) ?? room.teams[0];
 
   const cleaned = cleanName(name, `Player ${players.length + 1}`);
-  const identity = await insertPlayer(
-    room,
-    uniqueName(cleaned, players),
-    team.id,
-    false,
-    cleanUid(uid)
-  );
+  const identity = await insertPlayer(room, uniqueName(cleaned, players), team.id, false, device);
 
   return { state: await getState(room.code), identity };
+}
+
+/**
+ * The seat this device already holds in the room, if any.
+ *
+ * Only the device id can answer this. A name cannot: two people called Anton
+ * are two players, and letting a name claim a seat would let anyone take over
+ * anyone else's by typing it. A database that predates the `player_uid` column
+ * has no device ids to match, so this finds nothing and the caller falls back
+ * to creating a seat — the old behaviour, which is the right one there.
+ */
+export function findSeat(players: Player[], uid: string | null): Player | null {
+  if (!uid) return null;
+  return players.find((p) => p.player_uid === uid) ?? null;
+}
+
+/**
+ * Re-admits a player to the seat they already own: a new token (the old one is
+ * on a device that has lost it, or is the same device asking again), and the
+ * team they asked for if the lobby is still open. The name is deliberately not
+ * touched — the rest of the table already knows them by it.
+ */
+async function reissue(room: Room, player: Player, wantedTeam: string | null): Promise<Identity> {
+  const token = randomToken();
+  const { error } = await admin()
+    .from("player_tokens")
+    .upsert({ player_id: player.id, token }, { onConflict: "player_id" });
+  if (error) throw new ApiError(500, error.message);
+
+  const team =
+    room.status === "lobby" && wantedTeam ? room.teams.find((t) => t.id === wantedTeam) : undefined;
+
+  const patch: Record<string, unknown> = { last_seen_at: new Date().toISOString() };
+  if (team && team.id !== player.team_id) patch.team_id = team.id;
+  await admin().from("players").update(patch).eq("id", player.id);
+
+  await touch(room.id);
+  return { roomCode: room.code, playerId: player.id, token, name: player.name };
 }
 
 function uniqueName(name: string, players: Player[]): string {

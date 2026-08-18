@@ -30,7 +30,7 @@ npm install
 npm run verify
 ```
 
-`verify` runs the type checker, the 27 unit tests, and a production build. All three must pass. This is the same gate Vercel will run, so if it passes here it will pass there.
+`verify` runs the type checker, the 30 unit tests, and a production build. All three must pass. This is the same gate Vercel will run, so if it passes here it will pass there.
 
 ---
 
@@ -51,11 +51,19 @@ Click **Create new project** and wait about two minutes for it to provision.
 
 **1.3** When it's ready, open **SQL Editor** in the left sidebar and click **New query**.
 
-**1.4** Open `supabase/schema.sql` from this project, copy the entire file, paste it into the editor, and click **Run** (or ⌘↵). It should finish in a second or two and report success.
+**1.4** Open `supabase/schema.sql` from this project, copy the entire file, paste it into the editor, and click **Run** (or ⌘↵). It takes a second or two.
 
 That one script creates everything: the room, player, round, guess and bet tables; the isolated secret tables; the durable stats tables that outlive rooms; the scale catalogue table; the analytics events table; the leaderboard and analytics views; the row-level-security policies; the Realtime publication; and two housekeeping functions. It's written to be idempotent, so if you ever change it and re-run the whole thing, nothing breaks.
 
-**Watch the result line, and don't move on until it says success.** The SQL editor runs a whole script inside one transaction, so a single failing statement rolls back everything above it — the file either lands completely or not at all. That is worth knowing because of what it looks like later: if `schema.sql` fails and you go on to the seed, the seed fails with `ERROR: 42P01: relation "public.scales" does not exist`, and joins in the app start failing too, because none of the tables and columns the code expects are there. The error names the seed, but the cause is the script before it.
+**Do not move on until you have read the table it prints.** The file ends with a summary row, precisely so that "it seemed to work" is not a judgement call:
+
+| tables | views | scales_rows | tables_ok | views_ok | realtime | next_step |
+|---|---|---|---|---|---|---|
+| 12 | 7 | 0 | true | true | true | now run supabase/scales-seed.sql |
+
+`tables_ok` and `views_ok` must both be `true`. `realtime` may come back `false` on some projects, where the role you are running as isn't allowed to modify the `supabase_realtime` publication; that is survivable — the app polls every 2.5 seconds instead, and the game plays fine, just less snappily.
+
+If instead you get a red error, **nothing at all was applied.** The SQL editor runs a whole script inside one transaction, so one failing statement rolls back every statement above it; there is no half-applied state. Fix what the error names and run the file again. This matters because of how it shows up next: if `schema.sql` failed and you go on to the seed anyway, the seed fails with `ERROR: 42P01: relation "public.scales" does not exist`. That error names the seed, but the cause is the script before it — the seed is trying to fill a table that was never created.
 
 **If you already ran an earlier version of this file, run it again now.** Postgres skips `create table if not exists` for a table that already exists, which would leave the newer columns missing, so the script has an explicit migration block that adds them one by one — `scales`, `analytics_events`, `players.player_uid`, `player_round_stats.player_uid`, and the Ukrainian label columns on `rounds`. Re-running is the only way to get them, and it touches none of your existing data.
 
@@ -183,6 +191,8 @@ Two more are optional and can wait until you've read Step 6:
 |---|---|---|
 | `ANALYTICS_TOKEN` | any long random string | Requires that string to read `/api/analytics` and `/analytics`. Without it, both are open to anyone with the URL. |
 | `NEXT_PUBLIC_TRACK_POINTER` | `1` | Turns on the sampled pointer heat grid. Off by default. |
+| `MIXPANEL_TOKEN` | your Mixpanel project token | Mirrors every event to Mixpanel too. See Step 6. |
+| `MIXPANEL_HOST` | `https://api-eu.mixpanel.com` | Only needed if your Mixpanel project is US-hosted, in which case set `https://api.mixpanel.com`. |
 
 Leave the environment selector on all three of Production, Preview and Development so that preview deployments work too. Watch for trailing spaces or line breaks when pasting the long keys — that's the single most common cause of a deploy that builds fine but can't reach the database.
 
@@ -236,6 +246,8 @@ Then the click table, which is literally who clicked what, per control per page,
 
 Then the rooms table: how many devices joined each room versus how many actually played a round. This is the per-room version of the drop-out rate and it is usually the most actionable thing on the page, because it separates "nobody came" from "people came and bounced".
 
+If you'd rather read all this in Mixpanel, Step 6 mirrors the same events there. The two are not alternatives — the app sends to both.
+
 **5.3** Lock it down, if you care. Generate a random string, add it in Vercel as `ANALYTICS_TOKEN`, redeploy, and from then on the dashboard needs `https://YOUR-APP.vercel.app/analytics?key=YOUR-TOKEN`. Without the variable set, anyone who guesses the URL can read the numbers. There's nothing personal in there, but "how many people played" is still your business.
 
 **5.4** Optional: pointer heat. Set `NEXT_PUBLIC_TRACK_POINTER=1` and each page view sends one event holding a 12×8 grid of where the cursor spent time. Cursor *trails* are deliberately not recorded — sixty events a second per player is both a bill and a way of identifying somebody — so this is a coarse heat map, not a replay, and it only tells you which region of the screen people hover. Leave it off unless you have a specific layout question.
@@ -252,7 +264,84 @@ That deletes events older than 90 days. Pass an interval if you want a different
 
 ---
 
-## Step 6 — The finishing touches
+## Step 6 — Mixpanel (optional, and click-by-click)
+
+Step 5 is your own dashboard: the funnel, the drop-off, the clicks. Mixpanel gives you the reports that would be a lot of work to build by hand — funnels you can reorder without a deploy, retention, flows, and breakdowns by any property. The app mirrors its events to Mixpanel so both work at once, and your Supabase table stays the source of truth.
+
+Note before you start: **it's `npm`, not `pip`.** Mixpanel's docs default to their Python SDK, which is for a Python backend; this app is TypeScript. And there's nothing to install at all here — the integration is one HTTP call, already written, in `src/lib/server/mixpanel.ts`. All you do is provide the token.
+
+### 6.1 — Get the token (Mixpanel UI)
+
+In the screenshot you sent, the **gear icon at the bottom left** of the sidebar is what you want.
+
+1. Click the **gear icon** (bottom-left, next to the bell).
+2. Choose **Project Settings**.
+3. Find the **Access Keys** section. The first field is **Project Token** — a 32-character string.
+4. Copy it.
+
+That token is write-only. It can send events to your project and cannot read anything out of it, which is why it's safe to hand around and why it lives in an ordinary environment variable rather than a secret store. If you ever want a fresh one, the same screen has the option.
+
+Also note the URL of your project. Yours reads `eu.mixpanel.com`, which means EU data residency — that matters in 6.2 and is the single most common reason a correct-looking setup shows nothing.
+
+### 6.2 — Point the app at it
+
+Locally, add one line to whichever env file you already keep — `.env` and `.env.local` are both read, and the test script below reads them in the same order Next does:
+
+```
+MIXPANEL_TOKEN=your-project-token
+```
+
+Nothing else. The app already defaults to the EU ingestion host, `https://api-eu.mixpanel.com`, which is right for your project. (If you ever move to a US-hosted project, add `MIXPANEL_HOST=https://api.mixpanel.com`. Sending EU data to the US host gets you a cheerful `200` and no data — worth knowing, because it looks exactly like a broken token.)
+
+Then prove the connection before doing anything else:
+
+```bash
+npm run mixpanel:test
+```
+
+That sends one event called `mixpanel_probe` through the same code the app uses. It either says *Accepted by Mixpanel* or tells you which of the three usual causes it hit. If it says `MIXPANEL_TOKEN is not set`, the line it prints tells you which env files it actually found — check the token is in one of them and has no quotes around it.
+
+To make it live in production, add `MIXPANEL_TOKEN` in Vercel → Settings → Environment Variables for Production, Preview and Development, then **redeploy** — variables are baked in at build time, so an existing deployment will not pick it up. Confirm with `/api/health`, which now reports `"mixpanel":"on"`.
+
+### 6.3 — Confirm events are arriving (Mixpanel UI)
+
+1. Left sidebar → **Data** (the database icon) → **Events**.
+2. Wait up to a minute and reload. You're looking for `mixpanel_probe` from the test above, and after a game for `app_open`, `room_created`, `joined`, `guess_locked` and friends.
+3. The **No Events Detected** badge on the Home page clears itself once data lands.
+
+Once that works you can ignore the "Connect your data" card and the "Invite an engineer" card on Home entirely — those are onboarding prompts for people who haven't wired anything up yet. You have.
+
+### 6.4 — Build the two reports actually worth having
+
+Nothing needs configuring for events to arrive, but reports don't create themselves. These two are the ones to make.
+
+**The funnel.** Click **+ Create New** (top left) → **Funnels**. Add these steps in order, typing each event name into the step field:
+
+```
+app_open  →  room_created  →  joined  →  game_started  →  guess_locked  →  game_finished
+```
+
+Set the conversion window (top right of the report) to something like **1 day** — a party game is played in one sitting, and a 30-day window would count a room created last week as converted by a game today. Save it with **Save** in the top right and give it a name like "Play funnel". The step-to-step percentages are the same idea as the drop-off column on your own `/analytics` page; this one you can reorder and re-window without touching the code.
+
+**The click breakdown.** **+ Create New** → **Insights**. Set the event to **click**, then use **Breakdown** and choose the property **target**. That gives you a bar per control — `create-room`, `join-room`, `submit-guess`, `send-clue` and so on. Add a second breakdown by `path` if you want to separate the same label on different pages.
+
+Optional but cheap: **Retention** (do people come back for a second game — pick `app_open` as both the birth and return event) and **Flows** (what people actually do after `joined`, in the order they do it).
+
+### 6.5 — Two settings worth fixing now
+
+**Timezone.** Gear icon → Project Settings → **Timezone**. Set it to Kyiv. Reports bucket by day in the project's timezone, so leaving it on UTC quietly splits your evening games across two days.
+
+**Lexicon.** Left sidebar → Data → **Lexicon**. This is where you can give each event a plain-language description — "player locked their slider" for `guess_locked` — so the next person reading a report doesn't have to guess. Purely for humans; nothing breaks without it.
+
+### 6.6 — What Mixpanel will *not* show you
+
+**Session Replay** is in your sidebar and it will stay empty. Recording a session means capturing the page's DOM as the person uses it, which only Mixpanel's in-browser SDK can do, and this integration deliberately sends events from the server instead. That choice buys three things: one set of labels for both dashboards, no ~30 KB of extra JavaScript on a phone, and — the real reason — events that ad blockers can't drop, since the browser only ever talks to our own domain. If replay later matters more than those, the browser SDK can be added alongside without changing the server path.
+
+**Users with names.** There are no accounts, so a Mixpanel "user" is a browser: the same device id the leaderboard groups by. Two devices are two users even for the same human. That's the same trade-off described under Identity without accounts, and it's the price of a game nobody has to sign in to.
+
+---
+
+## Step 7 — The finishing touches
 
 **A nicer URL.** In Vercel, Settings → Domains lets you rename the project so the free URL becomes something like `consensus-radar-betterme.vercel.app`, or attach a domain you own. A short URL matters here, because people type it on phones.
 
@@ -284,7 +373,9 @@ The page loads but every action errors — almost always the environment variabl
 
 Joining fails, or a join succeeds and then bounces straight back to the join screen — check `/api/health` and look at `schema.missing`. This is what a half-applied `schema.sql` looks like from the outside: the code writes a column the database doesn't have, the insert fails, and the player never appears in the room state. The app is built to survive it — it drops the unknown column, logs `[schema] …`, and lets the game continue with the leaderboard grouping degraded — but the real fix is to run `supabase/schema.sql` again until it reports success. `/api/rooms/CODE/me` is the other useful probe: it answers `{"ok":true,...}` if the server still recognises your seat, which means the problem is in reading the room state rather than in your identity.
 
-The seed fails with `ERROR: 42P01: relation "public.scales" does not exist` — `schema.sql` never completed. The SQL editor runs each script in one transaction, so a failure anywhere in that file leaves the database with none of it. Run `supabase/schema.sql` on its own, confirm it says success, then run the seed.
+The seed fails with `ERROR: 42P01: relation "public.scales" does not exist` — `schema.sql` never completed, so there is no `scales` table for the seed to fill. Nothing in this error is about the seed. The SQL editor runs each script in one transaction, so a failure anywhere in `schema.sql` leaves the database with none of it, not part of it.
+
+Fix it in this order. Open a **New query**, paste `supabase/schema.sql` on its own, run it, and read the summary table it prints at the end: `tables_ok` and `views_ok` must be `true`. Only then run `supabase/scales-seed.sql` in a second query. If `schema.sql` itself errors, the message names the statement that broke — that is the thing to fix, and it is worth pasting somewhere you can read it in full rather than working from the truncated line the editor shows. Two harmless-looking causes worth ruling out first: pasting only part of the file (it is ~530 lines, so check the last line you pasted is the closing summary `select`), and running it against the wrong project when you have more than one open.
 
 Players don't see each other update — the Realtime websocket is blocked or the publication didn't get created. The app degrades to polling every 2.5 seconds in this case, so the game stays playable but feels sluggish. To confirm the publication exists, run this in the SQL editor:
 
@@ -294,7 +385,15 @@ select tablename from pg_publication_tables where pubname = 'supabase_realtime';
 
 You want `rooms`, `players`, `rounds`, `guesses` and `bets` in the result. If any are missing, re-run `supabase/schema.sql`.
 
-Somebody lost their seat in a room — that's the cost of having no sign-in. Identity lives in the browser's localStorage, so clearing site data, switching browsers, or opening the room in a private window makes you a new player. They can rejoin with the same name and keep playing.
+**I got dropped from the room, and the lobby is full of copies of me** (`Anton 3`, `Anton 3 2`, `Anton 3 2 2`, …) — this was a real bug, fixed in the release that added `supabase/dedupe-players.sql`. Two things caused it together, and both are now closed.
+
+The first was the phone's own cache. The room state is a plain `GET`, and mobile Safari will re-serve a `GET` from its memory cache regardless of `no-store`. A phone could sit on the response captured the moment the room was created — one player, the host — and hand that same body to every poll for the rest of the evening. The player never appeared in their own room, so the join screen came back. Every read now carries a `?_=…` parameter that makes the URL unique, which no cache can match. The diagnostic tell, if you ever see this shape again: `/api/rooms/CODE/me` answers `{"ok":true,…}` while the room state doesn't list you. That combination means the transport, not the database — `/me` sends identity headers, so it is never cached.
+
+The second was that joining wasn't idempotent, so each retry created a genuine new player row and `uniqueName()` politely appended another number. One device now gets one seat per room: a repeat join returns the seat it already holds, with its original name and team and a fresh token.
+
+To clean up rooms that already have ghosts, open `supabase/dedupe-players.sql` in the SQL editor and run it **once**. It shows you the affected devices first, then keeps the earliest seat per device and deletes the rest, then adds a partial unique index on `(room_id, player_uid)` so the database refuses a second seat even if the application ever regresses. It is safe to re-run and it leaves pre-`player_uid` rows (device id `null`) alone. Don't move it into `schema.sql`: that file runs as one transaction, and the index cannot be created while the duplicates it forbids still exist.
+
+Somebody lost their seat in a room, with no duplicates involved — that's the cost of having no sign-in. Identity lives in the browser's localStorage, so clearing site data, switching browsers, or opening the room in a private window makes you a new player. They can rejoin with the same name; if the browser kept its device id they get their original seat back, and if it didn't they come in as a new player.
 
 The same person shows up twice on the player leaderboard — check whether it's two browsers. Each browser mints its own permanent player id, and that id is what groups a person's rounds across games; the same human on a laptop and a phone is two ids and therefore two rows. Games played before this existed fall back to matching on name, and a name-only entry gets folded into the device entry that answers to the same name, so the usual cause is genuinely two devices. Merging them would need real accounts, which this game deliberately doesn't have.
 
@@ -303,5 +402,7 @@ Every round shows the same handful of scales — the seed didn't run. Check `/ap
 The analytics page is empty after people have played — three things to check in order. `/api/health` will say if `analytics_events` is missing. The period selector defaults to seven days, so try All time. And events are batched for a few seconds before being sent, so a tab that was closed instantly may have flushed nothing at all; if the table has rows but the page shows none, that's the period, not the pipeline.
 
 `/api/analytics` returns 401 — `ANALYTICS_TOKEN` is set, so the page needs the key in its URL: `/analytics?key=YOUR-TOKEN`. To call the API directly, send it as an `x-analytics-key` header.
+
+Mixpanel shows nothing, in this order. Does `/api/health` say `"mixpanel":"on"`? If it says `off`, the token isn't in that environment — locally check `.env` or `.env.local` (both are read), in production check Vercel and remember that adding a variable needs a redeploy. Then run `npm run mixpanel:test`, which reports the actual rejection reason rather than leaving you guessing. If the probe is accepted but real events don't appear, check the Vercel function logs for lines beginning `[mixpanel]`. And if everything claims success and the project is still empty, you're almost certainly sending to the wrong data region: an `eu.mixpanel.com` project needs `https://api-eu.mixpanel.com`, and the US host accepts the request and drops it.
 
 A scale you added in the dashboard doesn't appear — the server caches the catalogue for five minutes. Wait it out, or redeploy to clear it immediately. If it still doesn't appear, check that `enabled` is true and that all four label columns are filled; rows with a missing label are skipped rather than shown half-empty.

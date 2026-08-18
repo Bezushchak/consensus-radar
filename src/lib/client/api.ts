@@ -13,6 +13,28 @@ export class ApiCallError extends Error {
   }
 }
 
+/**
+ * Makes a GET URL unique.
+ *
+ * The server already answers `Cache-Control: no-store` and the fetch already
+ * asks for `cache: "no-store"`, and on a desktop browser that is the end of it.
+ * Mobile Safari is the exception: after a page restore it will happily re-serve
+ * a GET from its own memory cache and ignore both. That is not a cosmetic
+ * problem here — the room state is a GET, so a phone could sit on the snapshot
+ * taken the moment the room was created (one player, the host) forever. Every
+ * poll returned the same stale body, the player never appeared in their own
+ * room, and tapping Join again just added another row.
+ *
+ * A URL nothing has seen before cannot be in any cache, anywhere: not Safari's,
+ * not a corporate proxy's, not a CDN's. The counter is there so two calls in
+ * the same millisecond still differ.
+ */
+let nonce = 0;
+export function cacheBust(path: string): string {
+  const sep = path.includes("?") ? "&" : "?";
+  return `${path}${sep}_=${Date.now().toString(36)}${(nonce++).toString(36)}`;
+}
+
 async function request<T>(
   path: string,
   init?: RequestInit & { identity?: Identity | null }
@@ -23,7 +45,16 @@ async function request<T>(
     headers["x-player-token"] = init.identity.token;
   }
 
-  const res = await fetch(path, { ...init, headers: { ...headers, ...(init?.headers ?? {}) }, cache: "no-store" });
+  // Reads only: a POST is never served from a cache, and keeping its URL clean
+  // keeps the server logs readable.
+  const isRead = (init?.method ?? "GET").toUpperCase() === "GET";
+  if (isRead) {
+    headers["Cache-Control"] = "no-cache";
+    headers["Pragma"] = "no-cache";
+  }
+  const url = isRead ? cacheBust(path) : path;
+
+  const res = await fetch(url, { ...init, headers: { ...headers, ...(init?.headers ?? {}) }, cache: "no-store" });
   const text = await res.text();
   const data = text ? (JSON.parse(text) as unknown) : null;
 

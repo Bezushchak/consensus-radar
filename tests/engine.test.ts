@@ -20,8 +20,11 @@ import {
   scoreFor,
   teamsAtGoal,
 } from "../src/lib/game/engine";
+import { cacheBust } from "../src/lib/client/api";
+import { findSeat } from "../src/lib/server/rooms";
 import { storedLabels } from "../src/lib/scales";
-import { buildRows, foldEvents } from "../src/lib/server/analytics";
+import { buildRows, foldEvents, type EventRow } from "../src/lib/server/analytics";
+import { toMixpanel } from "../src/lib/server/mixpanel";
 import { SCALES, scaleByKey, scalesForCategories } from "../src/lib/scales-data";
 import { foldPlayerRows, type StatRow } from "../src/lib/server/leaderboard";
 import type { Player, Team } from "../src/lib/types";
@@ -481,4 +484,114 @@ test("session length is a median, and nonsense durations are ignored", () => {
   );
   assert.equal(summary.medianSessionSeconds, 30);
   assert.equal(summary.dropoutRate, null, "no app_open means no rate, not zero");
+});
+
+// ---------------------------------------------------------------------
+// The Mixpanel mirror
+// ---------------------------------------------------------------------
+
+const eventRow = (over: Partial<EventRow> = {}): EventRow => ({
+  session_id: "sess-1",
+  player_uid: "a".repeat(32),
+  room_code: "GSTE",
+  name: "guess_locked",
+  path: "/room/[code]",
+  props: { distance: 7 },
+  lang: "ua",
+  device: "mobile",
+  ts: "2026-08-18T17:46:21.000Z",
+  ...over,
+});
+
+test("events are mirrored to Mixpanel with the identity and time we meant", () => {
+  const [event] = toMixpanel([eventRow()], "tok");
+
+  assert.equal(event.event, "guess_locked", "the event name is ours, not renamed");
+  assert.equal(event.properties.token, "tok");
+  assert.equal(event.properties.distinct_id, "a".repeat(32), "one device is one person");
+  assert.equal(event.properties.$device_id, "a".repeat(32));
+  assert.equal(event.properties.time, Date.parse("2026-08-18T17:46:21.000Z"), "milliseconds");
+  assert.equal(event.properties.ip, "0", "no geolocation from a server IP");
+  assert.equal(event.properties.room_code, "GSTE");
+  assert.equal(event.properties.path, "/room/[code]", "the room code never rides in the path");
+  assert.equal(event.properties.device_type, "mobile", "not $device, which Mixpanel owns");
+  assert.equal(event.properties.distance, 7, "our props come through flat");
+
+  // A browser with no storage still produces a usable, non-colliding id.
+  const [anon] = toMixpanel([eventRow({ player_uid: null })], "tok");
+  assert.equal(anon.properties.distinct_id, "session-sess-1");
+});
+
+test("a retried batch cannot double-count, and a stale client cannot hijack it", () => {
+  const rows = [eventRow(), eventRow()];
+  const [first, second] = toMixpanel(rows, "tok");
+  assert.equal(first.properties.$insert_id, second.properties.$insert_id, "same event, same id");
+  assert.ok(String(first.properties.$insert_id).length <= 36, "Mixpanel caps $insert_id at 36");
+
+  // Two different events must not collide, or Mixpanel would drop one.
+  const [other] = toMixpanel([eventRow({ name: "clue_sent" })], "tok");
+  assert.notEqual(other.properties.$insert_id, first.properties.$insert_id);
+
+  // A prop called `token` must not be able to redirect events to another project.
+  const [hijack] = toMixpanel(
+    [eventRow({ props: { token: "someone-elses", distinct_id: "admin", ip: "8.8.8.8" } })],
+    "tok"
+  );
+  assert.equal(hijack.properties.token, "tok");
+  assert.equal(hijack.properties.distinct_id, "a".repeat(32));
+  assert.equal(hijack.properties.ip, "0");
+});
+
+test("an unparseable timestamp falls back to now rather than to 1970", () => {
+  const before = Date.now();
+  const [event] = toMixpanel([eventRow({ ts: "not a date" })], "tok");
+  const time = Number(event.properties.time);
+  assert.ok(time >= before && time <= Date.now() + 1000);
+});
+
+// --- the join loop -----------------------------------------------------
+
+test("a device that already has a seat is given it back, not a second one", () => {
+  const players = [
+    player({ id: "host", name: "Dmytro", player_uid: "a".repeat(32), is_host: true }),
+    player({ id: "p2", name: "Anton", player_uid: "b".repeat(32), team_id: "t2" }),
+  ];
+
+  assert.equal(findSeat(players, "b".repeat(32))?.id, "p2");
+  assert.equal(findSeat(players, "a".repeat(32))?.id, "host");
+  // A device nobody has seen gets a new seat, which is the whole point.
+  assert.equal(findSeat(players, "c".repeat(32)), null);
+});
+
+test("a seat is never claimed by name, or by a missing device id", () => {
+  // Rows written before the player_uid column existed carry no device id. Two
+  // of them must not collapse into one seat just because both are null, and a
+  // caller with no id of its own must not match them either.
+  const legacy = [
+    player({ id: "p1", name: "Anton", player_uid: null }),
+    player({ id: "p2", name: "Anton 2", player_uid: null }),
+  ];
+  assert.equal(findSeat(legacy, null), null);
+  assert.equal(findSeat(legacy, ""), null);
+  assert.equal(findSeat(legacy, "d".repeat(32)), null);
+
+  // Same name, different browser: two people, two seats.
+  const shared = [player({ id: "p1", name: "Anton", player_uid: "e".repeat(32) })];
+  assert.equal(findSeat(shared, "f".repeat(32)), null);
+});
+
+test("every read gets a URL no cache has seen before", () => {
+  const a = cacheBust("/api/rooms/GSTE");
+  const b = cacheBust("/api/rooms/GSTE");
+
+  assert.notEqual(a, b, "two calls in the same millisecond must still differ");
+  assert.ok(a.startsWith("/api/rooms/GSTE?_="));
+  assert.ok(b.startsWith("/api/rooms/GSTE?_="));
+
+  // An existing query string is extended, not clobbered.
+  const withQuery = cacheBust("/api/leaderboard?board=players&period=all");
+  assert.ok(withQuery.includes("board=players"));
+  assert.ok(withQuery.includes("period=all"));
+  assert.equal(withQuery.split("?").length, 2);
+  assert.ok(/[?&]_=[0-9a-z]+$/.test(withQuery));
 });

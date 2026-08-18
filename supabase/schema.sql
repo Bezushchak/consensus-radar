@@ -4,7 +4,25 @@
 -- Safe to re-run: everything is idempotent.
 -- =====================================================================
 
-create extension if not exists "pgcrypto";
+-- pgcrypto is already installed on every Supabase project, and `gen_random_uuid()`
+-- has been core Postgres since 13 either way. It is requested here only so this
+-- file also works on a plain Postgres — and wrapped, because on a managed
+-- database the role running this may not be allowed to create extensions, and an
+-- error here would roll back the entire script (see the note below).
+do $$
+begin
+  create extension if not exists "pgcrypto";
+exception when insufficient_privilege or feature_not_supported then
+  raise notice 'pgcrypto not created (%). Fine: gen_random_uuid() is core since PG13.', sqlerrm;
+end $$;
+
+-- =====================================================================
+-- READ THIS IF THE SCRIPT FAILS
+-- The Supabase SQL editor runs this whole file as ONE transaction, so a
+-- failure on any line rolls back every line. There is no such thing as a
+-- half-applied run: either the summary at the very bottom appears, or
+-- nothing at all happened. Fix the error it reports and run it again.
+-- =====================================================================
 
 -- ---------------------------------------------------------------------
 -- SCALES — the catalogue of polar pairs the game deals from.
@@ -446,11 +464,19 @@ end $$;
 -- ---------------------------------------------------------------------
 -- REALTIME
 -- ---------------------------------------------------------------------
+-- Realtime is an optimisation, not a requirement: without it the client falls
+-- back to polling every 2.5 seconds and the game is fully playable, just less
+-- snappy. That is why this whole section refuses to fail. On some projects the
+-- `supabase_realtime` publication is owned by a role the SQL editor is not, and
+-- an unguarded `alter publication` there would roll back all 500 lines above it
+-- over a feature nobody would have missed.
 do $$
 begin
   if not exists (select 1 from pg_publication where pubname = 'supabase_realtime') then
     create publication supabase_realtime;
   end if;
+exception when insufficient_privilege then
+  raise notice 'Could not create the supabase_realtime publication (%).', sqlerrm;
 end $$;
 
 do $$
@@ -459,14 +485,18 @@ declare
 begin
   foreach t in array array['rooms', 'players', 'rounds', 'guesses', 'bets']
   loop
-    if not exists (
-      select 1 from pg_publication_tables
-      where pubname = 'supabase_realtime'
-        and schemaname = 'public'
-        and tablename = t
-    ) then
-      execute format('alter publication supabase_realtime add table public.%I', t);
-    end if;
+    begin
+      if not exists (
+        select 1 from pg_publication_tables
+        where pubname = 'supabase_realtime'
+          and schemaname = 'public'
+          and tablename = t
+      ) then
+        execute format('alter publication supabase_realtime add table public.%I', t);
+      end if;
+    exception when insufficient_privilege or undefined_object then
+      raise notice 'Realtime not enabled for public.% (%) — the game falls back to polling.', t, sqlerrm;
+    end;
   end loop;
 end $$;
 
@@ -526,3 +556,30 @@ begin
 end $$;
 
 revoke all on function public.purge_old_events(interval) from anon, authenticated;
+
+-- ---------------------------------------------------------------------
+-- DID IT WORK?
+-- The SQL editor shows only the last statement's result, and "Success. No
+-- rows returned" looks identical whether this file did everything or was
+-- rolled back before it started. So the file ends by answering the question
+-- out loud. Every `ok` column must read true; `realtime` may read false on a
+-- project where the publication could not be touched, and that is survivable
+-- — the game polls instead.
+-- ---------------------------------------------------------------------
+select
+  (select count(*) from pg_tables  where schemaname = 'public')             as tables,
+  (select count(*) from pg_views   where schemaname = 'public')             as views,
+  (select count(*) from public.scales)                                      as scales_rows,
+  (select count(*) = 12 from pg_tables where schemaname = 'public'
+     and tablename in ('scales','rooms','players','player_tokens','rounds',
+                       'round_secrets','guesses','guess_values','bets',
+                       'game_results','player_round_stats','analytics_events')) as tables_ok,
+  (select count(*) = 7 from pg_views where schemaname = 'public'
+     and viewname in ('v_best_rounds','v_player_stats','v_scale_stats','v_funnel',
+                      'v_dropoff','v_clicks','v_room_dropoff'))             as views_ok,
+  (select count(*) = 5 from pg_publication_tables
+     where pubname = 'supabase_realtime' and schemaname = 'public'
+       and tablename in ('rooms','players','rounds','guesses','bets'))      as realtime,
+  case when (select count(*) from public.scales) = 0
+       then 'now run supabase/scales-seed.sql'
+       else 'schema and seed both in place' end                             as next_step;
