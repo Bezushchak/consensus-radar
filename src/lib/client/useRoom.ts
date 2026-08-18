@@ -19,11 +19,28 @@ export function useRoom(code: string) {
   const [state, setState] = useState<RoomState | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [live, setLive] = useState(false);
+  // When the request that produced the state we currently hold was *issued*.
+  // Callers need this to tell "state that reflects what I just did" apart from
+  // "state that was already on the wire before I did it".
+  const [issuedAt, setIssuedAt] = useState(0);
 
   const inFlight = useRef(false);
   const queued = useRef(false);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const mounted = useRef(true);
+
+  // Monotonic request numbering, so a slow response can never overwrite state
+  // that is already newer than it.
+  const seq = useRef(0);
+  const applied = useRef(0);
+
+  /** Adopt state we were handed directly (a join or an action response). */
+  const adoptState = useCallback((next: RoomState) => {
+    applied.current = ++seq.current;
+    setState(next);
+    setError(null);
+    setIssuedAt(Date.now());
+  }, []);
 
   const refresh = useCallback(async () => {
     if (inFlight.current) {
@@ -31,11 +48,15 @@ export function useRoom(code: string) {
       return;
     }
     inFlight.current = true;
+    const mySeq = ++seq.current;
+    const requestedAt = Date.now();
     try {
       const next = await fetchState(code);
-      if (mounted.current) {
+      if (mounted.current && mySeq >= applied.current) {
+        applied.current = mySeq;
         setState(next);
         setError(null);
+        setIssuedAt(requestedAt);
       }
     } catch (e) {
       if (mounted.current) setError(e instanceof Error ? e.message : "Could not load the room");
@@ -117,5 +138,5 @@ export function useRoom(code: string) {
     };
   }, [refresh]);
 
-  return { state, error, live, refresh, setState };
+  return { state, error, live, issuedAt, refresh, adoptState };
 }

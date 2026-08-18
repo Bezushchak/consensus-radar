@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import AppHeader from "@/components/AppHeader";
 import { useLang } from "@/components/LangProvider";
 import Scoreboard from "@/components/Scoreboard";
@@ -21,17 +21,26 @@ export type RunAction = (
 
 export default function RoomClient({ code }: { code: string }) {
   const { t, lang } = useLang();
-  const { state, error, live, refresh, setState } = useRoom(code);
+  const { state, error, live, issuedAt, refresh, adoptState } = useRoom(code);
 
   const [identity, setIdentity] = useState<Identity | null>(null);
   const [ready, setReady] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
+  // When the current identity was adopted. Room state fetched before this
+  // moment predates our join and legitimately has no row for us yet.
+  const adoptedAt = useRef(0);
+
+  const adoptIdentity = useCallback((next: Identity | null) => {
+    adoptedAt.current = Date.now();
+    setIdentity(next);
+  }, []);
+
   useEffect(() => {
-    setIdentity(loadIdentity(code));
+    adoptIdentity(loadIdentity(code));
     setReady(true);
-  }, [code]);
+  }, [code, adoptIdentity]);
 
   /** Runs a mutation and adopts the state the server hands back. */
   const run = useCallback<RunAction>(
@@ -41,7 +50,7 @@ export default function RoomClient({ code }: { code: string }) {
       setActionError(null);
       try {
         const next = await api.act(code, action, identity, body);
-        if (next && typeof next === "object" && "room" in next) setState(next);
+        if (next && typeof next === "object" && "room" in next) adoptState(next);
         else await refresh();
         return next;
       } catch (e) {
@@ -57,7 +66,7 @@ export default function RoomClient({ code }: { code: string }) {
         setBusy(false);
       }
     },
-    [code, identity, refresh, setState]
+    [code, identity, refresh, adoptState]
   );
 
   const me = useMemo(
@@ -67,12 +76,16 @@ export default function RoomClient({ code }: { code: string }) {
 
   // The device thinks it is in this room but the server disagrees (room was
   // reset or purged) — drop the stale identity and let them join again.
+  //
+  // Only trust state that was fetched after the identity was adopted. Without
+  // that check, joining evicts itself: the moment the new identity lands we
+  // still hold the pre-join state, which of course has no row for us.
   useEffect(() => {
-    if (ready && identity && state && !me) {
-      clearIdentity(code);
-      setIdentity(null);
-    }
-  }, [ready, identity, state, me, code]);
+    if (!ready || !identity || !state || me) return;
+    if (issuedAt <= adoptedAt.current) return;
+    clearIdentity(code);
+    setIdentity(null);
+  }, [ready, identity, state, me, issuedAt, code]);
 
   if (!ready || (!state && !error)) {
     return (
@@ -115,8 +128,11 @@ export default function RoomClient({ code }: { code: string }) {
       <JoinGate
         code={code}
         state={state}
-        onJoined={(id) => {
-          setIdentity(id);
+        onJoined={(id, joinedState) => {
+          // Adopt the state the join call returned, so `me` resolves on this
+          // very render instead of waiting for the next fetch.
+          adoptState(joinedState);
+          adoptIdentity(id);
           void refresh();
         }}
       />

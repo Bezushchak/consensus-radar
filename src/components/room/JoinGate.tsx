@@ -16,7 +16,7 @@ export default function JoinGate({
 }: {
   code: string;
   state: RoomState;
-  onJoined: (identity: Identity) => void;
+  onJoined: (identity: Identity, joinedState: RoomState) => void;
 }) {
   const { t, lang } = useLang();
   const [name, setName] = useState("");
@@ -32,11 +32,14 @@ export default function JoinGate({
     setBusy(true);
     setError(null);
     try {
-      const { identity } = await api.joinRoom(code, name, teamId ?? undefined);
+      const { identity, state: joined } = await api.joinRoom(code, name, teamId ?? undefined);
       saveIdentity(identity);
-      onJoined(identity);
+      onJoined(identity, joined);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Could not join");
+    } finally {
+      // Always release the button. Leaving it spinning was how a failed
+      // hand-off turned into a screen that never came back.
       setBusy(false);
     }
   }
