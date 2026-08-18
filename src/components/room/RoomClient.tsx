@@ -26,6 +26,7 @@ export default function RoomClient({ code }: { code: string }) {
   const [identity, setIdentity] = useState<Identity | null>(null);
   const [ready, setReady] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
+  const [seatNotice, setSeatNotice] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
   // When the current identity was adopted. Room state fetched before this
@@ -74,18 +75,56 @@ export default function RoomClient({ code }: { code: string }) {
     [identity, state]
   );
 
-  // The device thinks it is in this room but the server disagrees (room was
-  // reset or purged) — drop the stale identity and let them join again.
-  //
-  // Only trust state that was fetched after the identity was adopted. Without
-  // that check, joining evicts itself: the moment the new identity lands we
-  // still hold the pre-join state, which of course has no row for us.
+  // The device holds an identity but the room state has no row for it. That is
+  // ambiguous — the seat may be gone (room reset or purged), or this response
+  // may simply predate the join — so the server is asked instead of guessed
+  // at. Guessing is what produced the join loop: one stale fetch threw away a
+  // good identity, the join screen came back, the player joined again, and the
+  // whole thing went round for as long as they were willing to tap.
+  const recheck = useRef(0);
   useEffect(() => {
     if (!ready || !identity || !state || me) return;
     if (issuedAt <= adoptedAt.current) return;
-    clearIdentity(code);
-    setIdentity(null);
-  }, [ready, identity, state, me, issuedAt, code]);
+
+    let cancelled = false;
+    void (async () => {
+      try {
+        await api.verifyMembership(code, identity);
+        if (cancelled) return;
+        // Still a member: the state we hold is behind, not wrong. Refetch a
+        // few times, then say so rather than spinning silently.
+        if (++recheck.current <= 4) {
+          await refresh();
+        } else {
+          setSeatNotice(
+            lang === "ua"
+              ? "Сервер підтверджує, що ви в кімнаті, але її стан вас не показує. Оновіть сторінку; якщо не допомогло — перевірте /api/health."
+              : "The server says you are in this room but its state does not show you. Reload the page; if that does not help, check /api/health."
+          );
+        }
+      } catch (e) {
+        if (cancelled) return;
+        if (e instanceof api.ApiCallError && e.status === 401) {
+          clearIdentity(code);
+          setIdentity(null);
+        } else {
+          setSeatNotice(e instanceof Error ? e.message : "Could not verify your seat");
+        }
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [ready, identity, state, me, issuedAt, code, refresh, lang]);
+
+  // A resolved seat clears the suspicion.
+  useEffect(() => {
+    if (me) {
+      recheck.current = 0;
+      setSeatNotice(null);
+    }
+  }, [me]);
 
   if (!ready || (!state && !error)) {
     return (
@@ -128,6 +167,7 @@ export default function RoomClient({ code }: { code: string }) {
       <JoinGate
         code={code}
         state={state}
+        notice={seatNotice}
         onJoined={(id, joinedState) => {
           // Adopt the state the join call returned, so `me` resolves on this
           // very render instead of waiting for the next fetch.

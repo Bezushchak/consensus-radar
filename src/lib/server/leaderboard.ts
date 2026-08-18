@@ -41,6 +41,8 @@ export interface RoundRow {
   clue: string | null;
   scale_left: string;
   scale_right: string;
+  scale_left_ua: string | null;
+  scale_right_ua: string | null;
   target: number | null;
   marker: number | null;
   distance: number | null;
@@ -63,6 +65,8 @@ export interface ScaleRow {
   scale_key: string;
   scale_left: string;
   scale_right: string;
+  scale_left_ua: string | null;
+  scale_right_ua: string | null;
   times_played: number;
   avg_distance: number | null;
   avg_points: number | null;
@@ -102,7 +106,7 @@ export async function roundsBoard(period: Period, limit: number): Promise<RoundR
   let q = admin()
     .from("rounds")
     .select(
-      "team_name, clue_giver_name, clue, scale_left, scale_right, revealed_target, marker, distance, points, revealed_at"
+      "team_name, clue_giver_name, clue, scale_left, scale_right, scale_left_ua, scale_right_ua, revealed_target, marker, distance, points, revealed_at"
     )
     .not("revealed_at", "is", null)
     .not("distance", "is", null)
@@ -122,6 +126,8 @@ export async function roundsBoard(period: Period, limit: number): Promise<RoundR
     clue: (r.clue as string | null) ?? null,
     scale_left: String(r.scale_left),
     scale_right: String(r.scale_right),
+    scale_left_ua: (r.scale_left_ua as string | null) ?? null,
+    scale_right_ua: (r.scale_right_ua as string | null) ?? null,
     target: r.revealed_target === null ? null : Number(r.revealed_target),
     marker: r.marker === null ? null : Number(r.marker),
     distance: r.distance === null ? null : Number(r.distance),
@@ -130,18 +136,33 @@ export async function roundsBoard(period: Period, limit: number): Promise<RoundR
   }));
 }
 
-interface StatRow {
+export interface StatRow {
   player_name: string;
+  player_uid: string | null;
   role: "clue" | "guess" | "bet";
   distance: number | null;
   points: number | null;
   scale_key: string | null;
 }
 
+/**
+ * Per-person accuracy.
+ *
+ * Identity without accounts, in two steps. A row written by a browser that
+ * knows its device id groups by that id, so the same person is one entry
+ * however many games and however many rooms. Rows without one — games played
+ * before device ids existed, or a browser that cannot keep storage — fall back
+ * to grouping by lower-cased name, and are folded into a device group that
+ * answers to the same name, so a returning player is not listed twice.
+ *
+ * What this deliberately does not do is merge two different people who share a
+ * name across devices. Telling those apart needs a real account, and the whole
+ * point of this game is that nobody has to make one.
+ */
 export async function playersBoard(period: Period, limit: number): Promise<PlayerRow[]> {
   let q = admin()
     .from("player_round_stats")
-    .select("player_name, role, distance, points, scale_key")
+    .select("player_name, player_uid, role, distance, points, scale_key")
     .order("created_at", { ascending: false })
     .limit(MAX_ROWS);
 
@@ -150,6 +171,25 @@ export async function playersBoard(period: Period, limit: number): Promise<Playe
 
   const { data, error } = await q;
   if (error) throw new ApiError(500, error.message);
+
+  return foldPlayerRows((data ?? []) as StatRow[], limit);
+}
+
+/**
+ * The grouping half of `playersBoard`, kept pure so it can be tested without a
+ * database. Rows must arrive newest first.
+ */
+export function foldPlayerRows(rows: StatRow[], limit: number): PlayerRow[] {
+  const nameOf = (row: StatRow) => row.player_name.trim().toLowerCase();
+
+  // Newest rows come first, so the first device id seen for a name is the one
+  // that name most recently belonged to.
+  const uidByName = new Map<string, string>();
+  for (const row of rows) {
+    if (!row.player_uid) continue;
+    const name = nameOf(row);
+    if (!uidByName.has(name)) uidByName.set(name, row.player_uid);
+  }
 
   interface Acc {
     name: string;
@@ -161,8 +201,8 @@ export async function playersBoard(period: Period, limit: number): Promise<Playe
   }
   const acc = new Map<string, Acc>();
 
-  for (const row of (data ?? []) as StatRow[]) {
-    const key = row.player_name.toLowerCase();
+  for (const row of rows) {
+    const key = row.player_uid ?? uidByName.get(nameOf(row)) ?? nameOf(row);
     let a = acc.get(key);
     if (!a) {
       a = { name: row.player_name, clueDist: [], cluePts: [], guessDist: [], betsWon: 0, total: 0 };
@@ -206,7 +246,7 @@ export async function playersBoard(period: Period, limit: number): Promise<Playe
 export async function scalesBoard(period: Period, limit: number): Promise<ScaleRow[]> {
   let q = admin()
     .from("rounds")
-    .select("scale_key, scale_left, scale_right, distance, points, revealed_at")
+    .select("scale_key, scale_left, scale_right, scale_left_ua, scale_right_ua, distance, points, revealed_at")
     .not("revealed_at", "is", null)
     .not("distance", "is", null)
     .order("revealed_at", { ascending: false })
@@ -222,6 +262,8 @@ export async function scalesBoard(period: Period, limit: number): Promise<ScaleR
     key: string;
     left: string;
     right: string;
+    leftUa: string | null;
+    rightUa: string | null;
     dist: number[];
     pts: number[];
     bullseyes: number;
@@ -232,10 +274,14 @@ export async function scalesBoard(period: Period, limit: number): Promise<ScaleR
     const key = String(row.scale_key);
     let a = acc.get(key);
     if (!a) {
+      // Rows arrive newest first, so a reworded pair is labelled the way it
+      // was worded most recently.
       a = {
         key,
         left: String(row.scale_left),
         right: String(row.scale_right),
+        leftUa: (row.scale_left_ua as string | null) ?? null,
+        rightUa: (row.scale_right_ua as string | null) ?? null,
         dist: [],
         pts: [],
         bullseyes: 0,
@@ -255,6 +301,8 @@ export async function scalesBoard(period: Period, limit: number): Promise<ScaleR
       scale_key: a.key,
       scale_left: a.left,
       scale_right: a.right,
+      scale_left_ua: a.leftUa,
+      scale_right_ua: a.rightUa,
       times_played: a.dist.length,
       avg_distance: a.dist.length ? r1(avg(a.dist)!) : null,
       avg_points: a.pts.length ? r2(avg(a.pts)!) : null,

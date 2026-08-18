@@ -5,6 +5,7 @@ import Gauge from "@/components/Gauge";
 import { useLang } from "@/components/LangProvider";
 import Poles from "@/components/Poles";
 import * as api from "@/lib/client/api";
+import { track } from "@/lib/client/track";
 import { scoreFor } from "@/lib/game/engine";
 import type { RunAction } from "./RoomClient";
 import type { Identity, Player, RoomState, Round } from "@/lib/types";
@@ -70,6 +71,18 @@ export default function PlayView({
 
   const [slider, setSlider] = useState(50);
   useEffect(() => setSlider(50), [round.id]);
+
+  // Counted from every device that sees the reveal, so the funnel measures
+  // people who got a result rather than rounds that produced one.
+  useEffect(() => {
+    if (round.phase !== "reveal") return;
+    track("round_revealed", {
+      round: round.round_no,
+      points: round.points ?? 0,
+      distance: round.distance ?? -1,
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [round.id, round.phase]);
 
   const pill = `${t("round")} ${round.round_no} · ${round.team_name}`;
 
@@ -161,8 +174,13 @@ export default function PlayView({
             <div className="actions">
               <button
                 className="btn wide"
+                data-ev={myGuess ? "change-guess" : "submit-guess"}
                 disabled={busy}
-                onClick={() => void run("guess", { value: slider })}
+                onClick={async () => {
+                  const res = await run("guess", { value: slider });
+                  // The step that separates "was in the room" from "played".
+                  if (res) track("guess_locked", { round: round.round_no, changed: Boolean(myGuess) });
+                }}
               >
                 {myGuess ? t("changeGuess") : t("submitGuess")}
               </button>
@@ -179,15 +197,23 @@ export default function PlayView({
             <div className="betrow">
               <button
                 className={`btn ${myBet?.side === "left" ? "" : "ghost"}`}
+                data-ev="bet-left"
                 disabled={busy}
-                onClick={() => void run("bet", { side: "left" })}
+                onClick={async () => {
+                  const res = await run("bet", { side: "left" });
+                  if (res) track("bet_placed", { side: "left", round: round.round_no });
+                }}
               >
                 {t("betLeft")}
               </button>
               <button
                 className={`btn ${myBet?.side === "right" ? "" : "ghost"}`}
+                data-ev="bet-right"
                 disabled={busy}
-                onClick={() => void run("bet", { side: "right" })}
+                onClick={async () => {
+                  const res = await run("bet", { side: "right" });
+                  if (res) track("bet_placed", { side: "right", round: round.round_no });
+                }}
               >
                 {t("betRight")}
               </button>
@@ -215,7 +241,12 @@ export default function PlayView({
 
         {me.is_host || amClueGiver ? (
           <div className="actions">
-            <button className="btn ghost wide" disabled={busy} onClick={() => void run("reveal")}>
+            <button
+              className="btn ghost wide"
+              data-ev="reveal-now"
+              disabled={busy}
+              onClick={() => void run("reveal")}
+            >
               {t("revealNow")}
             </button>
           </div>
@@ -306,7 +337,12 @@ export default function PlayView({
 
       {me.is_host || amClueGiver ? (
         <div className="actions">
-          <button className="btn wide" disabled={busy} onClick={() => void run("next")}>
+          <button
+            className="btn wide"
+            data-ev="next-round"
+            disabled={busy}
+            onClick={() => void run("next")}
+          >
             {t("nextBtn")}
           </button>
         </div>
@@ -352,7 +388,8 @@ function ClueComposer({
       return;
     }
     setWarn(null);
-    await run("clue", { clue: text });
+    const res = await run("clue", { clue: text });
+    if (res) track("clue_sent", { round: round.round_no, words: text.split(/\s+/).length });
   }
 
   return (
@@ -391,7 +428,12 @@ function ClueComposer({
       {warn ? <div className="err">{warn}</div> : null}
 
       <div className="actions">
-        <button className="btn wide" disabled={busy || clue.trim().length === 0} onClick={send}>
+        <button
+          className="btn wide"
+          data-ev="send-clue"
+          disabled={busy || clue.trim().length === 0}
+          onClick={send}
+        >
           {t("sendClue")}
         </button>
       </div>

@@ -5,6 +5,8 @@ import { useCallback, useEffect, useState } from "react";
 import AppHeader from "@/components/AppHeader";
 import { useLang } from "@/components/LangProvider";
 import { fetchLeaderboard } from "@/lib/client/api";
+import { startTracking, trackOnce } from "@/lib/client/track";
+import { storedLabels } from "@/lib/scales";
 
 type Board = "teams" | "rounds" | "players" | "scales";
 type Period = "all" | "month" | "week";
@@ -40,6 +42,25 @@ export default function LeaderboardPage() {
     void load();
   }, [load]);
 
+  useEffect(() => {
+    startTracking();
+    trackOnce("leaderboard_open");
+  }, []);
+
+  // Rows carry both languages; older rows only have the English pair.
+  const poles = (r: Row) => {
+    const { left, right } = storedLabels(
+      {
+        scale_left: s(r.scale_left),
+        scale_right: s(r.scale_right),
+        scale_left_ua: (r.scale_left_ua as string | null) ?? null,
+        scale_right_ua: (r.scale_right_ua as string | null) ?? null,
+      },
+      lang
+    );
+    return `${left} ↔ ${right}`;
+  };
+
   const when = (iso: unknown) => {
     if (!iso) return "—";
     const d = new Date(String(iso));
@@ -69,6 +90,7 @@ export default function LeaderboardPage() {
             <button
               key={key}
               className={board === key ? "active" : ""}
+              data-ev={`lb-board-${key}`}
               onClick={() => setBoard(key)}
             >
               {label}
@@ -87,6 +109,7 @@ export default function LeaderboardPage() {
             <button
               key={key}
               className={period === key ? "active" : ""}
+              data-ev={`lb-period-${key}`}
               onClick={() => setPeriod(key)}
             >
               {label}
@@ -162,9 +185,7 @@ export default function LeaderboardPage() {
                           {n(r.marker)}% → {n(r.target)}%
                         </div>
                       </td>
-                      <td className="mini">
-                        {s(r.scale_left)} ↔ {s(r.scale_right)}
-                      </td>
+                      <td className="mini">{poles(r)}</td>
                       <td>{s(r.clue)}</td>
                       <td>{s(r.team_name)}</td>
                       <td>{s(r.clue_giver_name)}</td>
@@ -223,7 +244,7 @@ export default function LeaderboardPage() {
                     <tr key={`${r.scale_key}-${i}`}>
                       <td className="rank">{i + 1}</td>
                       <td>
-                        {s(r.scale_left)} ↔ {s(r.scale_right)}
+                        {poles(r)}
                         <div className="mini">{s(r.scale_key)}</div>
                       </td>
                       <td className="num">{n(r.avg_distance)}</td>

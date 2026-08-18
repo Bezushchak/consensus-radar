@@ -6,16 +6,20 @@ import AppHeader from "@/components/AppHeader";
 import { useLang } from "@/components/LangProvider";
 import * as api from "@/lib/client/api";
 import { rememberedName, saveIdentity } from "@/lib/client/identity";
+import { startTracking, track, trackOnce, trackRoom } from "@/lib/client/track";
 import type { Identity, RoomState } from "@/lib/types";
 
 /** Shown when this device has no identity for the room yet. */
 export default function JoinGate({
   code,
   state,
+  notice,
   onJoined,
 }: {
   code: string;
   state: RoomState;
+  /** Anything the room owner needs to know before trying again. */
+  notice?: string | null;
   onJoined: (identity: Identity, joinedState: RoomState) => void;
 }) {
   const { t, lang } = useLang();
@@ -24,7 +28,12 @@ export default function JoinGate({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  useEffect(() => setName(rememberedName()), []);
+  useEffect(() => {
+    setName(rememberedName());
+    startTracking();
+    trackRoom(code);
+    trackOnce("join_open", { players: state.players.length });
+  }, [code, state.players.length]);
 
   const inProgress = state.room.status !== "lobby";
 
@@ -34,9 +43,14 @@ export default function JoinGate({
     try {
       const { identity, state: joined } = await api.joinRoom(code, name, teamId ?? undefined);
       saveIdentity(identity);
+      track("joined", { from: "gate", picked_team: teamId !== null });
       onJoined(identity, joined);
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Could not join");
+      const message = e instanceof Error ? e.message : "Could not join";
+      setError(message);
+      // The message that appears on the phone also lands in the events table,
+      // which is how a failure nobody screenshots still gets noticed.
+      track("error_shown", { where: "join-gate", message });
     } finally {
       // Always release the button. Leaving it spinning was how a failed
       // hand-off turned into a screen that never came back.
@@ -80,6 +94,7 @@ export default function JoinGate({
               <button
                 key={team.id}
                 className={teamId === team.id ? "sel" : ""}
+                data-ev="pick-team"
                 onClick={() => setTeamId(team.id)}
               >
                 <span className="dot" style={{ background: team.color }} />
@@ -98,10 +113,10 @@ export default function JoinGate({
           </div>
         ) : null}
 
-        {error ? <div className="err">{error}</div> : null}
+        {error ?? notice ? <div className="err">{error ?? notice}</div> : null}
 
         <div className="actions">
-          <button className="btn wide" onClick={join} disabled={busy}>
+          <button className="btn wide" data-ev="join-room" onClick={join} disabled={busy}>
             {busy ? t("loading") : t("joinBtn")}
           </button>
         </div>

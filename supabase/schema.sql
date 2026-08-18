@@ -7,6 +7,30 @@
 create extension if not exists "pgcrypto";
 
 -- ---------------------------------------------------------------------
+-- SCALES — the catalogue of polar pairs the game deals from.
+--
+-- Seeded by supabase/scales-seed.sql (generated from src/lib/scales-data.ts),
+-- but editable from the dashboard: add a row and the next round can draw it,
+-- no deploy needed. `enabled = false` retires a pair while keeping every
+-- statistic that references its key.
+--
+-- Both languages are stored here AND copied onto each round, so rewording a
+-- pair never rewrites how an old game reads.
+-- ---------------------------------------------------------------------
+create table if not exists public.scales (
+  key        text primary key,
+  category   text not null check (category in ('general', 'analytics')),
+  left_ua    text not null,
+  right_ua   text not null,
+  left_en    text not null,
+  right_en   text not null,
+  enabled    boolean not null default true,
+  created_at timestamptz not null default now()
+);
+
+create index if not exists scales_pool_idx on public.scales (category) where enabled;
+
+-- ---------------------------------------------------------------------
 -- ROOMS
 -- teams is a jsonb array: [{ "id": "t1", "name": "...", "color": "#...",
 --                            "score": 0 }, ...]
@@ -37,10 +61,14 @@ create index if not exists rooms_created_at_idx on public.rooms (created_at desc
 -- ---------------------------------------------------------------------
 -- PLAYERS  (no auth: a player is a name + a device-local secret token)
 -- ---------------------------------------------------------------------
+-- `player_uid` is the browser's own long-lived id (localStorage). It is not a
+-- credential and proves nothing on its own — it exists so the leaderboard can
+-- tell "Dmytro playing his fourth game" from "a different Dmytro".
 create table if not exists public.players (
   id           uuid primary key default gen_random_uuid(),
   room_id      uuid not null references public.rooms (id) on delete cascade,
   name         text not null,
+  player_uid   text,
   team_id      text,
   is_host      boolean not null default false,
   clue_turns   int not null default 0,   -- used to rotate the clue-giver
@@ -72,9 +100,14 @@ create table if not exists public.rounds (
   team_name       text not null,
   clue_giver_id   uuid references public.players (id) on delete set null,
   clue_giver_name text,
+  -- Both languages are frozen onto the round, so a reworded or retired scale
+  -- never changes how a finished game reads. EN also keeps the leaderboards
+  -- readable for everyone.
   scale_key       text not null,
-  scale_left      text not null,   -- EN label, for readable leaderboards
+  scale_left      text not null,
   scale_right     text not null,
+  scale_left_ua   text,
+  scale_right_ua  text,
   phase           text not null default 'clue'
                   check (phase in ('clue', 'guess', 'reveal')),
   clue            text,
@@ -161,6 +194,7 @@ create table if not exists public.player_round_stats (
   round_id    uuid,
   room_code   text not null,
   player_name text not null,
+  player_uid  text,      -- device id; null for games played before it existed
   role        text not null check (role in ('clue', 'guess', 'bet')),
   distance    numeric,   -- clue/guess: how far off (0..100)
   points      int,       -- points credited for this contribution
@@ -170,6 +204,55 @@ create table if not exists public.player_round_stats (
 
 create index if not exists prs_name_idx  on public.player_round_stats (lower(player_name));
 create index if not exists prs_scale_idx on public.player_round_stats (scale_key);
+
+-- ---------------------------------------------------------------------
+-- PRODUCT ANALYTICS
+-- One append-only table for every tracked event. Deliberately dumb: the
+-- server writes rows, nothing updates them, and every question (conversion,
+-- drop-off, what got clicked) is a query over this one table.
+--
+-- What is NOT here, on purpose: no IP address, no user agent string, no
+-- cursor path replay. `session_id` is a random per-tab id and `player_uid`
+-- is the same non-credential device id the leaderboard groups by, so the
+-- table can answer "how many people" without identifying anybody.
+-- ---------------------------------------------------------------------
+create table if not exists public.analytics_events (
+  id         bigserial primary key,
+  session_id text not null,             -- random per tab, minted client-side
+  player_uid text,                      -- device id, when the browser has one
+  room_code  text,
+  name       text not null,             -- allowlisted on the server
+  path       text,                      -- '/', '/room/[code]', '/leaderboard'
+  props      jsonb not null default '{}'::jsonb,
+  lang       text,
+  device     text,                      -- 'mobile' | 'desktop'
+  ts         timestamptz not null default now()
+);
+
+create index if not exists ae_ts_idx      on public.analytics_events (ts desc);
+create index if not exists ae_name_ts_idx on public.analytics_events (name, ts desc);
+create index if not exists ae_session_idx on public.analytics_events (session_id);
+create index if not exists ae_room_idx    on public.analytics_events (room_code)
+  where room_code is not null;
+
+-- ---------------------------------------------------------------------
+-- COLUMNS ADDED AFTER THE FIRST RELEASE
+-- `create table if not exists` above leaves an existing table alone, so any
+-- column added later has to be spelled out here as well. Both forms are
+-- idempotent, which keeps this one file safe to run against a fresh project
+-- and against one created by an earlier release.
+--
+-- Everything that depends on these columns — indexes, views — has to come
+-- after this block, not next to its table above, or the script dies on the
+-- old project it is meant to migrate.
+-- ---------------------------------------------------------------------
+alter table public.players            add column if not exists player_uid     text;
+alter table public.player_round_stats add column if not exists player_uid     text;
+alter table public.rounds             add column if not exists scale_left_ua  text;
+alter table public.rounds             add column if not exists scale_right_ua text;
+
+create index if not exists prs_uid_idx on public.player_round_stats (player_uid)
+  where player_uid is not null;
 
 -- ---------------------------------------------------------------------
 -- LEADERBOARD VIEWS
@@ -186,6 +269,8 @@ select
   r.scale_key,
   r.scale_left,
   r.scale_right,
+  r.scale_left_ua,
+  r.scale_right_ua,
   r.revealed_target as target,
   r.marker,
   r.distance,
@@ -196,11 +281,18 @@ where r.revealed_at is not null
   and r.distance is not null
 order by r.distance asc, r.revealed_at desc;
 
--- 2. Player stats, keyed on the lower-cased name (there is no auth, so a
---    name is the identity — see README for the trade-off).
+-- 2. Player stats, keyed on the device id when there is one and on the
+--    lower-cased name otherwise (rows written before device ids existed).
+--    There is still no auth: see README for what that buys and costs.
+--
+--    /api/leaderboard does one thing more than this view — it also folds a
+--    legacy name-only group into a device group that answers to the same name,
+--    so a returning player is not listed twice. That merge needs a second pass
+--    over the rows, which is why the API aggregates in JS and this view exists
+--    for ad-hoc queries in the SQL editor.
 create or replace view public.v_player_stats as
 with clue as (
-  select lower(player_name) as key,
+  select coalesce(player_uid, lower(player_name)) as key,
          max(player_name)   as player_name,
          count(*)           as clues_given,
          avg(distance)      as clue_avg_distance,
@@ -208,16 +300,16 @@ with clue as (
          sum(points)        as clue_total_points
   from public.player_round_stats
   where role = 'clue'
-  group by lower(player_name)
+  group by coalesce(player_uid, lower(player_name))
 ),
 guess as (
-  select lower(player_name) as key,
+  select coalesce(player_uid, lower(player_name)) as key,
          max(player_name)   as player_name,
          count(*)           as guesses_made,
          avg(distance)      as guess_avg_distance
   from public.player_round_stats
   where role = 'guess'
-  group by lower(player_name)
+  group by coalesce(player_uid, lower(player_name))
 )
 select
   coalesce(c.key, g.key)                 as key,
@@ -235,8 +327,10 @@ full outer join guess g on g.key = c.key;
 create or replace view public.v_scale_stats as
 select
   r.scale_key,
-  max(r.scale_left)  as scale_left,
-  max(r.scale_right) as scale_right,
+  max(r.scale_left)     as scale_left,
+  max(r.scale_right)    as scale_right,
+  max(r.scale_left_ua)  as scale_left_ua,
+  max(r.scale_right_ua) as scale_right_ua,
   count(*)           as times_played,
   round(avg(r.distance), 1) as avg_distance,
   round(avg(r.points), 2)   as avg_points,
@@ -247,10 +341,72 @@ group by r.scale_key
 order by avg(r.distance) desc nulls last;
 
 -- ---------------------------------------------------------------------
+-- ANALYTICS VIEWS
+-- The /analytics page computes the same numbers in JS so it can honour the
+-- date filter; these exist for ad-hoc questions in the SQL editor.
+-- ---------------------------------------------------------------------
+
+-- The funnel, one row per step, ordered the way a player meets them.
+create or replace view public.v_funnel as
+with steps(step_no, name) as (
+  values (1, 'app_open'), (2, 'create_open'),   (3, 'room_created'),
+         (4, 'joined'),   (5, 'game_started'),  (6, 'clue_sent'),
+         (7, 'guess_locked'), (8, 'round_revealed'), (9, 'game_finished')
+)
+select
+  s.step_no,
+  s.name,
+  count(distinct e.session_id) as sessions,
+  count(e.id)                  as events
+from steps s
+left join public.analytics_events e on e.name = s.name
+group by s.step_no, s.name
+order by s.step_no;
+
+-- Where sessions stop. `dropped` is how many got this far and no further.
+create or replace view public.v_dropoff as
+with f as (select * from public.v_funnel)
+select
+  f.step_no,
+  f.name,
+  f.sessions,
+  f.sessions - coalesce(lead(f.sessions) over (order by f.step_no), 0) as dropped,
+  case when f.sessions = 0 then null else round(
+    100.0 * (f.sessions - coalesce(lead(f.sessions) over (order by f.step_no), 0))
+          / f.sessions, 1) end as drop_pct
+from f;
+
+-- What people actually click. `props->>'target'` is the data-ev label.
+create or replace view public.v_clicks as
+select
+  coalesce(props->>'target', '(unlabelled)') as target,
+  path,
+  count(*)                    as clicks,
+  count(distinct session_id)  as sessions
+from public.analytics_events
+where name = 'click'
+group by 1, 2
+order by clicks desc;
+
+-- Per-room drop-off: joined the lobby but never locked a guess.
+create or replace view public.v_room_dropoff as
+select
+  room_code,
+  count(distinct session_id) filter (where name = 'joined')       as joined,
+  count(distinct session_id) filter (where name = 'guess_locked') as played,
+  min(ts) as first_seen,
+  max(ts) as last_seen
+from public.analytics_events
+where room_code is not null
+group by room_code
+order by min(ts) desc;
+
+-- ---------------------------------------------------------------------
 -- ROW LEVEL SECURITY
 -- Every write goes through the Next.js API routes with the service-role
 -- key (which bypasses RLS). The browser only ever reads.
 -- ---------------------------------------------------------------------
+alter table public.scales             enable row level security;
 alter table public.rooms              enable row level security;
 alter table public.players            enable row level security;
 alter table public.rounds             enable row level security;
@@ -261,16 +417,21 @@ alter table public.player_round_stats enable row level security;
 
 -- Secrets: RLS on and deliberately NO policies -> unreachable for
 -- anon/authenticated, readable only by the service role.
-alter table public.round_secrets enable row level security;
-alter table public.guess_values  enable row level security;
-alter table public.player_tokens enable row level security;
+--
+-- `analytics_events` is in this group for a different reason: it is nobody's
+-- business but the host's. The browser writes to it through POST /api/events
+-- (service role, server side) and can never read a single row back.
+alter table public.round_secrets    enable row level security;
+alter table public.guess_values     enable row level security;
+alter table public.player_tokens    enable row level security;
+alter table public.analytics_events enable row level security;
 
 do $$
 declare
   t text;
 begin
   foreach t in array array[
-    'rooms', 'players', 'rounds', 'guesses', 'bets',
+    'scales', 'rooms', 'players', 'rounds', 'guesses', 'bets',
     'game_results', 'player_round_stats'
   ]
   loop
@@ -341,3 +502,27 @@ begin
 end $$;
 
 revoke all on function public.purge_stale_rooms(interval) from anon, authenticated;
+
+-- Analytics rows are the one thing here that grows without bound. Keeping a
+-- quarter is plenty for "is this game landing"; schedule this next to the
+-- room purge if you want it bounded:
+--   select public.purge_old_events();
+create or replace function public.purge_old_events(older_than interval default interval '90 days')
+returns int
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  deleted int;
+begin
+  with gone as (
+    delete from public.analytics_events
+    where ts < now() - older_than
+    returning 1
+  )
+  select count(*) into deleted from gone;
+  return deleted;
+end $$;
+
+revoke all on function public.purge_old_events(interval) from anon, authenticated;

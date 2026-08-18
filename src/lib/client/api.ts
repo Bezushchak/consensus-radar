@@ -1,5 +1,6 @@
 "use client";
 
+import { deviceUid } from "./identity";
 import type { Identity, RoomState } from "../types";
 
 /** Thin typed wrapper around the backend. All errors surface as ApiCallError. */
@@ -45,22 +46,33 @@ export interface CreateRoomPayload {
   lang: string;
 }
 
+// Both entry points attach this browser's device id, so the leaderboard can
+// recognise a returning player. Callers do not have to think about it.
+
 export function createRoom(payload: CreateRoomPayload) {
   return request<{ state: RoomState; identity: Identity }>("/api/rooms", {
     method: "POST",
-    body: JSON.stringify(payload),
+    body: JSON.stringify({ ...payload, uid: deviceUid() }),
   });
 }
 
 export function joinRoom(code: string, name: string, teamId?: string) {
   return request<{ state: RoomState; identity: Identity }>(
     `/api/rooms/${encodeURIComponent(code)}/join`,
-    { method: "POST", body: JSON.stringify({ name, teamId }) }
+    { method: "POST", body: JSON.stringify({ name, teamId, uid: deviceUid() }) }
   );
 }
 
 export function fetchState(code: string) {
   return request<RoomState>(`/api/rooms/${encodeURIComponent(code)}`);
+}
+
+/** Throws ApiCallError(401) when the seat is genuinely gone. */
+export function verifyMembership(code: string, identity: Identity) {
+  return request<{ ok: true; playerId: string; name: string }>(
+    `/api/rooms/${encodeURIComponent(code)}/me`,
+    { identity }
+  );
 }
 
 export function fetchSecret(code: string, identity: Identity) {

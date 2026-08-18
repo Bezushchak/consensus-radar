@@ -36,6 +36,8 @@ export interface Player {
   id: string;
   room_id: string;
   name: string;
+  /** The browser's own long-lived id, used to join up games on the leaderboard. */
+  player_uid: string | null;
   team_id: string | null;
   is_host: boolean;
   clue_turns: number;
@@ -73,8 +75,12 @@ export interface Round {
   clue_giver_id: string | null;
   clue_giver_name: string | null;
   scale_key: string;
+  /** English labels, frozen at deal time. */
   scale_left: string;
   scale_right: string;
+  /** Ukrainian labels — null on rounds played before they were recorded. */
+  scale_left_ua: string | null;
+  scale_right_ua: string | null;
   phase: Phase;
   clue: string | null;
   marker: number | null;

@@ -3,8 +3,8 @@ import { joinRoom } from "@/lib/server/rooms";
 
 export const dynamic = "force-dynamic";
 
-/** POST /api/rooms/:code/join — { name, teamId? } -> { state, identity } */
+/** POST /api/rooms/:code/join — { name, teamId?, uid? } -> { state, identity } */
 export async function POST(req: Request, { params }: { params: { code: string } }) {
   const body = await readBody(req);
-  return guard(() => joinRoom(requireCode(params.code), body.name, body.teamId));
+  return guard(() => joinRoom(requireCode(params.code), body.name, body.teamId, body.uid));
 }

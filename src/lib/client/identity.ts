@@ -11,6 +11,7 @@ const key = (code: string) => `cr:identity:${code.toUpperCase()}`;
 const LAST = "cr:last-room";
 const LANG = "cr:lang";
 const NAME = "cr:name";
+const UID = "cr:player-uid";
 
 function safeGet(k: string): string | null {
   try {
@@ -51,6 +52,36 @@ export function clearIdentity(code: string): void {
   } catch {
     /* ignore */
   }
+}
+
+/**
+ * This browser's long-lived id, minted once and kept for every future game.
+ *
+ * It is what makes "Dmytro" on the leaderboard one person across games instead
+ * of one row per game — no email, no password, nothing to remember. The cost
+ * of that convenience: a different browser or a cleared storage is a different
+ * player, and anyone who uses this browser plays as this id. It grants no
+ * access to anything, so leaking it does nothing; the per-room `token` is the
+ * value that actually authorises moves.
+ */
+export function deviceUid(): string {
+  const existing = safeGet(UID);
+  if (existing && /^[0-9a-f]{32}$/.test(existing)) return existing;
+
+  const fresh = randomHex(16);
+  safeSet(UID, fresh);
+  return fresh;
+}
+
+function randomHex(bytes: number): string {
+  const buf = new Uint8Array(bytes);
+  try {
+    crypto.getRandomValues(buf);
+  } catch {
+    // Ancient or locked-down browser: uniqueness is all this needs.
+    for (let i = 0; i < buf.length; i++) buf[i] = Math.floor(Math.random() * 256);
+  }
+  return Array.from(buf, (b) => b.toString(16).padStart(2, "0")).join("");
 }
 
 export function lastRoom(): string | null {

@@ -11,6 +11,7 @@ import {
   betIsCorrect,
   cleanClue,
   cleanName,
+  cleanUid,
   clampSlider,
   firstTeamIndexWithPlayers,
   generateRoomCode,
@@ -24,6 +25,7 @@ import {
   scoreFor,
   teamsAtGoal,
 } from "../game/engine";
+import { scalePool } from "./scales";
 import type {
   BetRow,
   BetSide,
@@ -48,6 +50,56 @@ export class ApiError extends Error {
 
 const CATEGORIES = ["general", "analytics"] as const;
 const GOALS = [0, 15, 20, 25, 30];
+
+const MIGRATION_HINT =
+  "the database is missing part of supabase/schema.sql — run that file in the Supabase SQL editor";
+
+/**
+ * Insert that survives a database the latest schema.sql has not been run
+ * against yet.
+ *
+ * PostgREST answers an unknown column with PGRST204 and names it in the
+ * message. The columns listed in `optional` hold no rules — a device id for
+ * grouping stats, a second language for the pole labels — so dropping one and
+ * retrying is strictly better than refusing to let anybody into the room. The
+ * warning in the log says what to run to get the column back.
+ */
+async function insertTolerant<T>(
+  table: string,
+  row: Record<string, unknown>,
+  optional: string[]
+): Promise<T> {
+  let payload: Record<string, unknown> = { ...row };
+
+  for (let attempt = 0; attempt <= optional.length; attempt++) {
+    const { data, error } = await admin().from(table).insert(payload).select("*").maybeSingle();
+    if (!error) return data as T;
+
+    const missing = optional.find((col) => col in payload && namesMissingColumn(error, col));
+    if (!missing) throw new ApiError(500, describe(error.message));
+
+    console.warn(`[schema] public.${table}.${missing} is missing — ${MIGRATION_HINT}`);
+    const next = { ...payload };
+    delete next[missing];
+    payload = next;
+  }
+
+  throw new ApiError(500, describe("insert failed"));
+}
+
+function namesMissingColumn(error: { code?: string; message: string }, column: string): boolean {
+  return (
+    (error.code === "PGRST204" || /schema cache|does not exist/i.test(error.message)) &&
+    error.message.includes(column)
+  );
+}
+
+/** Turns a bare Postgres complaint into one that says what to do about it. */
+function describe(message: string): string {
+  return /schema cache|does not exist|42P01|42703/i.test(message)
+    ? `${message} — ${MIGRATION_HINT}`
+    : message;
+}
 
 // ---------------------------------------------------------------------
 // Reads
@@ -95,7 +147,12 @@ export async function getState(code: string): Promise<RoomState> {
     bets = (b.data ?? []) as BetRow[];
   }
 
-  return { room, players, round, guesses, bets };
+  // Device ids are for grouping stats, not for showing to the table. They are
+  // not credentials, but there is no reason for one player's browser to learn
+  // another's, so they never leave the server.
+  const publicPlayers = players.map((p) => ({ ...p, player_uid: null }));
+
+  return { room, players: publicPlayers, round, guesses, bets };
 }
 
 /** Validates the device token and returns the room + the player it belongs to. */
@@ -132,6 +189,21 @@ export async function authenticate(
   return { room, player: player as Player };
 }
 
+/**
+ * "Am I still in this room?"
+ *
+ * The one question a client must not answer for itself. A room state with no
+ * row for me can mean two very different things — the join never landed, or
+ * the response was already on the wire when it did — and only the server can
+ * tell them apart. Asking cost us a bug once: the client guessed, guessed
+ * wrong, threw away a perfectly good identity, and bounced the player back to
+ * the join screen in a loop.
+ */
+export async function membership(code: string, playerId: string, token: string) {
+  const { player } = await authenticate(code, playerId, token);
+  return { ok: true, playerId: player.id, name: player.name, teamId: player.team_id };
+}
+
 // ---------------------------------------------------------------------
 // Room lifecycle
 // ---------------------------------------------------------------------
@@ -143,6 +215,7 @@ export interface CreateRoomInput {
   goal?: unknown;
   betsEnabled?: unknown;
   lang?: unknown;
+  uid?: unknown;
 }
 
 export async function createRoom(input: CreateRoomInput): Promise<{ state: RoomState; identity: Identity }> {
@@ -184,7 +257,13 @@ export async function createRoom(input: CreateRoomInput): Promise<{ state: RoomS
   }
   if (!room) throw new ApiError(500, "Could not allocate a room code, please retry");
 
-  const identity = await insertPlayer(room, cleanName(input.hostName, "Host"), teams[0].id, true);
+  const identity = await insertPlayer(
+    room,
+    cleanName(input.hostName, "Host"),
+    teams[0].id,
+    true,
+    cleanUid(input.uid)
+  );
   await admin().from("rooms").update({ host_player_id: identity.playerId }).eq("id", room.id);
 
   return { state: await getState(room.code), identity };
@@ -194,16 +273,15 @@ async function insertPlayer(
   room: Room,
   name: string,
   teamId: string | null,
-  isHost: boolean
+  isHost: boolean,
+  uid: string | null
 ): Promise<Identity> {
-  const { data, error } = await admin()
-    .from("players")
-    .insert({ room_id: room.id, name, team_id: teamId, is_host: isHost })
-    .select("*")
-    .maybeSingle();
-  if (error) throw new ApiError(500, error.message);
+  const player = await insertTolerant<Player>(
+    "players",
+    { room_id: room.id, name, player_uid: uid, team_id: teamId, is_host: isHost },
+    ["player_uid"]
+  );
 
-  const player = data as Player;
   const token = randomToken();
   const { error: tokErr } = await admin()
     .from("player_tokens")
@@ -217,7 +295,8 @@ async function insertPlayer(
 export async function joinRoom(
   code: string,
   name: unknown,
-  teamId: unknown
+  teamId: unknown,
+  uid: unknown
 ): Promise<{ state: RoomState; identity: Identity }> {
   const room = await getRoom(code);
   if (room.status === "finished") throw new ApiError(409, "This game has already finished");
@@ -230,7 +309,13 @@ export async function joinRoom(
     room.teams.find((t) => t.id === wanted) ?? smallestTeam(room.teams, players) ?? room.teams[0];
 
   const cleaned = cleanName(name, `Player ${players.length + 1}`);
-  const identity = await insertPlayer(room, uniqueName(cleaned, players), team.id, false);
+  const identity = await insertPlayer(
+    room,
+    uniqueName(cleaned, players),
+    team.id,
+    false,
+    cleanUid(uid)
+  );
 
   return { state: await getState(room.code), identity };
 }
@@ -345,14 +430,17 @@ async function openRound(room: Room): Promise<Round> {
   const giver = pickClueGiver(teamPlayers);
   if (!giver) throw new ApiError(409, "The active team has no players");
 
-  const { data: used } = await admin().from("rounds").select("scale_key").eq("room_id", room.id);
+  const [{ data: used }, pool] = await Promise.all([
+    admin().from("rounds").select("scale_key").eq("room_id", room.id),
+    scalePool(room.categories),
+  ]);
   const usedKeys = (used ?? []).map((r: { scale_key: string }) => r.scale_key);
-  const scale = pickScale(room.categories, usedKeys);
+  const scale = pickScale(pool, usedKeys);
 
   const roundNo = room.round_no + 1;
-  const { data, error } = await admin()
-    .from("rounds")
-    .insert({
+  const round = await insertTolerant<Round>(
+    "rounds",
+    {
       room_id: room.id,
       round_no: roundNo,
       team_id: team.id,
@@ -360,14 +448,16 @@ async function openRound(room: Room): Promise<Round> {
       clue_giver_id: giver.id,
       clue_giver_name: giver.name,
       scale_key: scale.key,
+      // Both languages are copied onto the round: the pair can later be
+      // reworded or retired without changing how this game reads.
       scale_left: scale.l.en,
       scale_right: scale.r.en,
+      scale_left_ua: scale.l.ua,
+      scale_right_ua: scale.r.ua,
       phase: "clue",
-    })
-    .select("*")
-    .maybeSingle();
-  if (error) throw new ApiError(500, error.message);
-  const round = data as Round;
+    },
+    ["scale_left_ua", "scale_right_ua"]
+  );
 
   const { error: secretErr } = await admin()
     .from("round_secrets")
@@ -631,13 +721,19 @@ async function revealRound(room: Room, round: Round): Promise<void> {
     .eq("id", round.id);
   if (roundErr) throw new ApiError(500, roundErr.message);
 
-  // Durable per-player stats (these outlive the room).
+  // Durable per-player stats (these outlive the room). Each row carries the
+  // device id as well as the name, so the leaderboard can recognise a
+  // returning player instead of treating every game as a new stranger.
+  const roster = await getPlayers(room.id);
+  const uidOf = new Map(roster.map((p) => [p.id, p.player_uid ?? null]));
+
   const stats: Record<string, unknown>[] = [];
   if (round.clue_giver_name) {
     stats.push({
       round_id: round.id,
       room_code: room.code,
       player_name: round.clue_giver_name,
+      player_uid: round.clue_giver_id ? uidOf.get(round.clue_giver_id) ?? null : null,
       role: "clue",
       distance,
       points: pts,
@@ -649,6 +745,7 @@ async function revealRound(room: Room, round: Round): Promise<void> {
       round_id: round.id,
       room_code: room.code,
       player_name: g.player_name,
+      player_uid: uidOf.get(g.player_id) ?? null,
       role: "guess",
       distance: g.distance,
       points: scoreFor(target, g.value).pts,
@@ -660,13 +757,25 @@ async function revealRound(room: Room, round: Round): Promise<void> {
       round_id: round.id,
       room_code: room.code,
       player_name: b.player_name,
+      player_uid: uidOf.get(b.player_id) ?? null,
       role: "bet",
       distance: null,
       points: b.correct ? BET_POINTS : 0,
       scale_key: round.scale_key,
     });
   }
-  if (stats.length > 0) await admin().from("player_round_stats").insert(stats);
+  if (stats.length > 0) {
+    const { error: statErr } = await admin().from("player_round_stats").insert(stats);
+    // Stats are a nice-to-have; a reveal must never fail because of them. On a
+    // database without the device-id column, write the rows without it.
+    if (statErr && namesMissingColumn(statErr, "player_uid")) {
+      console.warn(`[schema] public.player_round_stats.player_uid is missing — ${MIGRATION_HINT}`);
+      const stripped = stats.map(({ player_uid: _drop, ...rest }) => rest);
+      await admin().from("player_round_stats").insert(stripped);
+    } else if (statErr) {
+      console.error("[consensus-radar] stats insert failed", statErr.message);
+    }
+  }
 
   const reached = teamsAtGoal(teams, room.goal);
   if (reached.length > 0) {

@@ -14,6 +14,7 @@ export async function POST(req: Request) {
       goal: body.goal,
       betsEnabled: body.betsEnabled,
       lang: body.lang,
+      uid: body.uid,
     })
   );
 }

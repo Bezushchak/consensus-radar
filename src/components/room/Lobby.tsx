@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { useLang } from "@/components/LangProvider";
+import { track } from "@/lib/client/track";
 import type { RunAction } from "./RoomClient";
 import type { Player, RoomState } from "@/lib/types";
 
@@ -64,7 +65,7 @@ export default function Lobby({
           <div className="hint">{t("shareHint")}</div>
         </div>
         <div className="actions" style={{ justifyContent: "center" }}>
-          <button className="btn ghost sm" onClick={copyLink}>
+          <button className="btn ghost sm" data-ev="copy-link" onClick={copyLink}>
             {copied ? t("copied") : `🔗 ${t("copy")}`}
           </button>
         </div>
@@ -77,6 +78,7 @@ export default function Lobby({
             <button
               key={team.id}
               className={me.team_id === team.id ? "sel" : ""}
+              data-ev="switch-team"
               disabled={busy}
               onClick={() => void run("team", { teamId: team.id })}
             >
@@ -145,13 +147,17 @@ export default function Lobby({
           {saved ? <div className="ok">{t("settingsSaved")}</div> : null}
 
           <div className="actions">
-            <button className="btn ghost" onClick={saveSettings} disabled={busy}>
+            <button className="btn ghost" data-ev="save-settings" onClick={saveSettings} disabled={busy}>
               {t("saveSettings")}
             </button>
             <button
               className="btn"
               style={{ flex: 1 }}
-              onClick={() => void run("start")}
+              data-ev="start-game"
+              onClick={async () => {
+                const res = await run("start");
+                if (res) track("game_started", { players: players.length, teams: staffedTeams });
+              }}
               disabled={busy || !canStart}
             >
               {t("startBtn")}

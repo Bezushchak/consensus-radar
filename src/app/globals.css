@@ -724,3 +724,40 @@ table.lb tr:nth-child(1) .rank {
   font-size: 12px;
   color: var(--muted);
 }
+
+/* Analytics dashboard: KPI tiles and the funnel bars. */
+.kpis {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 12px;
+  margin: 18px 0 4px;
+}
+.kpi {
+  background: rgba(12, 20, 46, 0.6);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 14px 16px;
+}
+.kpinum {
+  font-size: 26px;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.1;
+}
+.kpilabel {
+  color: var(--muted);
+  font-size: 12px;
+  margin-top: 4px;
+}
+.bar {
+  height: 8px;
+  border-radius: 99px;
+  background: rgba(44, 53, 102, 0.55);
+  overflow: hidden;
+}
+.bar span {
+  display: block;
+  height: 100%;
+  border-radius: 99px;
+  background: linear-gradient(90deg, var(--accent), var(--accent2));
+}

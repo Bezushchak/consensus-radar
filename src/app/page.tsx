@@ -7,6 +7,7 @@ import AppHeader from "@/components/AppHeader";
 import { useLang } from "@/components/LangProvider";
 import * as api from "@/lib/client/api";
 import { lastRoom, loadIdentity, rememberedName, saveIdentity } from "@/lib/client/identity";
+import { startTracking, track, trackOnce, trackRoom } from "@/lib/client/track";
 import { MAX_TEAMS, PALETTE, normalizeCode } from "@/lib/game/engine";
 
 export default function HomePage() {
@@ -29,6 +30,11 @@ export default function HomePage() {
     setName(rememberedName());
     const last = lastRoom();
     if (last && loadIdentity(last)) setResume(last);
+
+    // Step 1 of the funnel. Everything else is measured against this number.
+    startTracking();
+    trackRoom(null);
+    trackOnce("app_open", { resume: Boolean(last) });
   }, []);
 
   const defaultTeamName = (i: number) => (lang === "ua" ? `Команда ${i + 1}` : `Team ${i + 1}`);
@@ -49,9 +55,13 @@ export default function HomePage() {
         lang,
       });
       saveIdentity(identity);
+      trackRoom(identity.roomCode);
+      track("room_created", { teams: teamNames.length, goal, bets, cats: categories.join("+") });
       router.push(`/room/${identity.roomCode}`);
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Could not create the room");
+      const message = e instanceof Error ? e.message : "Could not create the room";
+      setError(message);
+      track("error_shown", { where: "create", message });
       setBusy(null);
     }
   }
@@ -67,14 +77,20 @@ export default function HomePage() {
     try {
       const existing = loadIdentity(clean);
       if (existing) {
+        trackRoom(clean);
+        track("joined", { resumed: true });
         router.push(`/room/${clean}`);
         return;
       }
       const { identity } = await api.joinRoom(clean, name);
       saveIdentity(identity);
+      trackRoom(identity.roomCode);
+      track("joined", { from: "home" });
       router.push(`/room/${identity.roomCode}`);
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Could not join the room");
+      const message = e instanceof Error ? e.message : "Could not join the room";
+      setError(message);
+      track("error_shown", { where: "join-home", message });
       setBusy(null);
     }
   }
@@ -101,7 +117,11 @@ export default function HomePage() {
 
         {resume ? (
           <div className="actions">
-            <button className="btn ghost wide" onClick={() => router.push(`/room/${resume}`)}>
+            <button
+              className="btn ghost wide"
+              data-ev="resume-room"
+              onClick={() => router.push(`/room/${resume}`)}
+            >
               {t("rejoinBtn", { code: resume })}
             </button>
           </div>
@@ -112,7 +132,14 @@ export default function HomePage() {
 
       <div className="grid2" style={{ marginTop: 16 }}>
         {/* ---------------- create ---------------- */}
-        <section className="card">
+        {/* Touching anything in this card counts as "started setting a game
+            up", which is the step that tells a curious visitor apart from
+            somebody who meant to host. */}
+        <section
+          className="card"
+          onFocusCapture={() => trackOnce("create_open")}
+          onPointerDownCapture={() => trackOnce("create_open")}
+        >
           <h2>{t("createTitle")}</h2>
           <p className="sub">{t("shareHint")}</p>
 
@@ -183,7 +210,7 @@ export default function HomePage() {
           </div>
 
           <div className="actions">
-            <button className="btn wide" onClick={create} disabled={busy !== null}>
+            <button className="btn wide" data-ev="create-room" onClick={create} disabled={busy !== null}>
               {busy === "create" ? t("loading") : t("createBtn")}
             </button>
           </div>
@@ -218,7 +245,7 @@ export default function HomePage() {
           />
 
           <div className="actions">
-            <button className="btn wide" onClick={join} disabled={busy !== null}>
+            <button className="btn wide" data-ev="join-by-code" onClick={join} disabled={busy !== null}>
               {busy === "join" ? t("loading") : t("joinBtn")}
             </button>
           </div>

@@ -7,6 +7,7 @@ import {
   betIsCorrect,
   cleanClue,
   cleanName,
+  cleanUid,
   clampSlider,
   firstTeamIndexWithPlayers,
   generateRoomCode,
@@ -19,7 +20,10 @@ import {
   scoreFor,
   teamsAtGoal,
 } from "../src/lib/game/engine";
-import { SCALES, scaleLabels, scalesForCategories } from "../src/lib/scales";
+import { storedLabels } from "../src/lib/scales";
+import { buildRows, foldEvents } from "../src/lib/server/analytics";
+import { SCALES, scaleByKey, scalesForCategories } from "../src/lib/scales-data";
+import { foldPlayerRows, type StatRow } from "../src/lib/server/leaderboard";
 import type { Player, Team } from "../src/lib/types";
 
 const player = (over: Partial<Player> & { id: string }): Player => ({
@@ -28,6 +32,7 @@ const player = (over: Partial<Player> & { id: string }): Player => ({
   team_id: "t1",
   is_host: false,
   clue_turns: 0,
+  player_uid: null,
   joined_at: "2026-01-01T00:00:00.000Z",
   last_seen_at: "2026-01-01T00:00:00.000Z",
   ...over,
@@ -131,6 +136,17 @@ test("input sanitising", () => {
   assert.equal(clampSlider(null), null);
 });
 
+test("device ids are accepted only in the shape the client mints", () => {
+  assert.equal(cleanUid("  ABCDEF0123456789  "), "abcdef0123456789");
+  assert.equal(cleanUid("a".repeat(32)), "a".repeat(32));
+  assert.equal(cleanUid("deadbeef"), null, "too short to be unique");
+  assert.equal(cleanUid("f".repeat(65)), null, "too long");
+  assert.equal(cleanUid("not-hex-at-all-really"), null);
+  assert.equal(cleanUid(""), null);
+  assert.equal(cleanUid(undefined), null);
+  assert.equal(cleanUid(42), null);
+});
+
 test("team construction clamps to the supported range", () => {
   assert.equal(makeTeams([]).length, 2, "always at least two teams");
   assert.equal(makeTeams(new Array(20).fill("x")).length, MAX_TEAMS);
@@ -146,28 +162,323 @@ test("scale pool respects the chosen categories and avoids repeats", () => {
 
   const used = SCALES.filter((s) => s.category === "general").map((s) => s.key);
   for (let i = 0; i < 50; i++) {
-    assert.ok(!used.includes(pickScale(["general", "analytics"], used).key));
+    assert.ok(!used.includes(pickScale(SCALES, used).key));
   }
   // Pool exhausted -> allowed to reuse rather than crash.
   const all = SCALES.map((s) => s.key);
-  assert.ok(all.includes(pickScale(["general", "analytics"], all).key));
+  assert.ok(all.includes(pickScale(SCALES, all).key));
+
+  // The pool is now passed in, so the engine never reaches for the catalogue
+  // itself — an empty pool is a caller bug and says so.
+  assert.throws(() => pickScale([], []), /non-empty pool/);
+
+  const onlyAnalytics = scalesForCategories(["analytics"]);
+  for (let i = 0; i < 50; i++) {
+    assert.equal(pickScale(onlyAnalytics, []).category, "analytics");
+  }
+});
+
+test("the catalogue is big enough to keep a long night fresh", () => {
+  assert.ok(SCALES.length >= 250, `expected 250+ pairs, got ${SCALES.length}`);
+  assert.ok(scalesForCategories(["general"]).length >= 150);
+  assert.ok(scalesForCategories(["analytics"]).length >= 60);
+  assert.equal(scaleByKey("hot_cold")?.r.en, "Cold");
+  assert.equal(scaleByKey("no_such_pair"), undefined);
 });
 
 test("every scale has both languages and a unique key", () => {
   const keys = new Set<string>();
   for (const s of SCALES) {
     assert.ok(s.key.length > 0);
+    assert.match(s.key, /^[a-z0-9_]+$/, `scale key is not seed-safe: ${s.key}`);
     assert.equal(keys.has(s.key), false, `duplicate scale key: ${s.key}`);
     keys.add(s.key);
     for (const lang of ["ua", "en"] as const) {
       assert.ok(s.l[lang]?.length > 0, `${s.key} missing ${lang} left label`);
       assert.ok(s.r[lang]?.length > 0, `${s.key} missing ${lang} right label`);
+      assert.notEqual(s.l[lang], s.r[lang], `${s.key} has identical ${lang} poles`);
     }
   }
-  assert.deepEqual(scaleLabels("signal_noise", "en"), { left: "Signal", right: "Noise" });
-  assert.deepEqual(
-    scaleLabels("removed_scale", "en", { left: "L", right: "R" }),
-    { left: "L", right: "R" },
-    "retired scales fall back to the labels stored on the round"
+});
+
+const DEV_A = "aaaa1111aaaa1111aaaa1111aaaa1111";
+const DEV_B = "bbbb2222bbbb2222bbbb2222bbbb2222";
+
+const stat = (over: Partial<StatRow> & { player_name: string }): StatRow => ({
+  player_uid: null,
+  role: "clue",
+  distance: 10,
+  points: 3,
+  scale_key: "hot_cold",
+  ...over,
+});
+
+test("one device is one player, however many games and however many names", () => {
+  // Newest first, the order the query returns.
+  const rows: StatRow[] = [
+    stat({ player_name: "dima b", player_uid: DEV_A, points: 5, distance: 2 }),
+    stat({ player_name: "Dima", player_uid: DEV_A, points: 3, distance: 10 }),
+  ];
+  const board = foldPlayerRows(rows, 10);
+  assert.equal(board.length, 1, "renaming yourself does not create a second player");
+  assert.equal(board[0].clues_given, 2);
+  assert.equal(board[0].total_points, 8);
+  assert.equal(board[0].clue_avg_points, 4);
+  assert.equal(board[0].clue_avg_distance, 6);
+  assert.equal(board[0].player_name, "dima b", "the most recent name wins");
+});
+
+test("games played before device ids fold into the player they belong to", () => {
+  const rows: StatRow[] = [
+    stat({ player_name: "Dmytro", player_uid: DEV_A, points: 5 }),
+    stat({ player_name: "dmytro", player_uid: null, points: 3 }), // legacy row
+  ];
+  const board = foldPlayerRows(rows, 10);
+  assert.equal(board.length, 1, "the same person is not listed twice");
+  assert.equal(board[0].total_points, 8);
+});
+
+test("a shared name on two devices stays two players", () => {
+  const rows: StatRow[] = [
+    stat({ player_name: "Sasha", player_uid: DEV_A, points: 5 }),
+    stat({ player_name: "Sasha", player_uid: DEV_B, points: 1 }),
+  ];
+  const board = foldPlayerRows(rows, 10);
+  assert.equal(board.length, 2, "telling namesakes apart is what accounts are for");
+  assert.deepEqual(board.map((r) => r.total_points), [5, 1]);
+});
+
+test("roles are counted separately and the board is ranked by clue quality", () => {
+  const rows: StatRow[] = [
+    stat({ player_name: "Ann", player_uid: DEV_A, role: "clue", points: 5, distance: 3 }),
+    stat({ player_name: "Ann", player_uid: DEV_A, role: "guess", points: 0, distance: 7 }),
+    stat({ player_name: "Ann", player_uid: DEV_A, role: "bet", points: 1, distance: null }),
+    stat({ player_name: "Ann", player_uid: DEV_A, role: "bet", points: 0, distance: null }),
+    stat({ player_name: "Bob", player_uid: DEV_B, role: "clue", points: 3, distance: 12 }),
+  ];
+  const [ann, bob] = foldPlayerRows(rows, 10);
+
+  assert.equal(ann.player_name, "Ann", "higher average clue points ranks first");
+  assert.equal(ann.clues_given, 1);
+  assert.equal(ann.guesses_made, 1, "guessing does not count as giving a clue");
+  assert.equal(ann.guess_avg_distance, 7);
+  assert.equal(ann.bets_won, 1, "only the winning bet counts");
+  assert.equal(ann.total_points, 6, "clue and bet points; guesses score through the team");
+  assert.equal(bob.player_name, "Bob");
+
+  assert.equal(foldPlayerRows(rows, 1).length, 1, "the limit is applied after ranking");
+});
+
+test("a player with no clues yet still appears, ranked last", () => {
+  const rows: StatRow[] = [
+    stat({ player_name: "Guesser", player_uid: DEV_A, role: "guess", points: 0, distance: 4 }),
+    stat({ player_name: "Cluer", player_uid: DEV_B, role: "clue", points: 0, distance: 40 }),
+  ];
+  const board = foldPlayerRows(rows, 10);
+  assert.deepEqual(board.map((r) => r.player_name), ["Cluer", "Guesser"]);
+  assert.equal(board[1].clue_avg_points, null, "no clues means no average, not zero");
+  assert.equal(board[1].clues_given, 0);
+});
+
+test("rounds are read in the reader's language, with English as the floor", () => {
+  const bilingual = {
+    scale_left: "Signal",
+    scale_right: "Noise",
+    scale_left_ua: "Сигнал",
+    scale_right_ua: "Шум",
+  };
+  assert.deepEqual(storedLabels(bilingual, "ua"), { left: "Сигнал", right: "Шум" });
+  assert.deepEqual(storedLabels(bilingual, "en"), { left: "Signal", right: "Noise" });
+
+  // Rounds played before the UA columns existed still render.
+  const legacy = { scale_left: "Signal", scale_right: "Noise", scale_left_ua: null, scale_right_ua: null };
+  assert.deepEqual(storedLabels(legacy, "ua"), { left: "Signal", right: "Noise" });
+
+  // A half-written row is treated as legacy rather than shown half-translated.
+  const partial = { ...bilingual, scale_right_ua: null };
+  assert.deepEqual(storedLabels(partial, "ua"), { left: "Signal", right: "Noise" });
+});
+
+// ---------------------------------------------------------------------
+// Analytics
+// ---------------------------------------------------------------------
+
+const round = (n: number) => Math.round(n * 10) / 10;
+
+test("the events endpoint only accepts what it promised to store", () => {
+  const now = Date.now();
+  const rows = buildRows({
+    sessionId: "s1",
+    uid: "a".repeat(32),
+    lang: "ua",
+    device: "mobile",
+    events: [
+      { name: "app_open", path: "/", ts: now },
+      { name: "click", path: "/room/[code]", roomCode: "gste", props: { target: "join-room" }, ts: now },
+      // Not on the allowlist: a public write-anything table is the thing to avoid.
+      { name: "drop_table", path: "/", ts: now },
+      { name: "", ts: now },
+    ],
+  });
+
+  assert.deepEqual(rows.map((r) => r.name), ["app_open", "click"]);
+  assert.equal(rows[1].room_code, "GSTE", "room codes are stored upper-case");
+  assert.equal(rows[0].player_uid, "a".repeat(32));
+  assert.equal(rows[0].lang, "ua");
+  assert.equal(rows[0].device, "mobile");
+
+  // A bad device id is dropped rather than stored as junk, and an unknown
+  // language is stored as unknown rather than guessed.
+  const loose = buildRows({ sessionId: "s2", uid: "nope", lang: "fr", events: [{ name: "app_open" }] });
+  assert.equal(loose[0].player_uid, null);
+  assert.equal(loose[0].lang, null);
+
+  assert.throws(() => buildRows({ events: [{ name: "app_open" }] }), /sessionId/);
+});
+
+test("event props are clamped so the table stays cheap", () => {
+  const many: Record<string, unknown> = { "bad key": 1, nested: { a: 1 }, list: [1, 2] };
+  for (let i = 0; i < 12; i++) many[`k${i}`] = i;
+
+  const [row] = buildRows({
+    sessionId: "s1",
+    events: [{ name: "app_open", props: { ...many, long: "x".repeat(500), pi: 1.23456, on: true } }],
+  });
+
+  assert.ok(Object.keys(row.props).length <= 8, "at most eight keys survive");
+  assert.equal(row.props["bad key"], undefined);
+  assert.equal(row.props.nested, undefined, "no nesting");
+  assert.equal(row.props.list, undefined);
+
+  const [numeric] = buildRows({
+    sessionId: "s1",
+    events: [{ name: "app_open", props: { long: "x".repeat(500), pi: 1.23456, on: true } }],
+  });
+  assert.equal(String(numeric.props.long).length, 120);
+  assert.equal(numeric.props.pi, 1.235);
+  assert.equal(numeric.props.on, true);
+});
+
+test("a client clock cannot write events into the future or the distant past", () => {
+  const now = Date.now();
+  const rows = buildRows({
+    sessionId: "s1",
+    events: [
+      { name: "app_open", ts: now + 86400000 },
+      { name: "app_open", ts: now - 30 * 86400000 },
+      { name: "app_open", ts: "not a number" },
+    ],
+  });
+  for (const row of rows) {
+    const drift = Math.abs(new Date(row.ts).getTime() - now);
+    assert.ok(drift < 60000, "a hostile timestamp is replaced with the server's");
+  }
+});
+
+test("conversion, drop-off and the drop-out rate are per session, not per event", () => {
+  const ts = new Date().toISOString();
+  const ev = (session_id: string, name: string, extra: Record<string, unknown> = {}) => ({
+    session_id,
+    name,
+    room_code: null,
+    path: "/",
+    props: {},
+    ts,
+    ...extra,
+  });
+
+  const summary = foldEvents(
+    [
+      // Three sessions open the app; one of them opens it twice.
+      ev("a", "app_open"),
+      ev("a", "app_open"),
+      ev("b", "app_open"),
+      ev("c", "app_open"),
+      // Two get as far as creating a room.
+      ev("a", "create_open"),
+      ev("a", "room_created"),
+      ev("b", "create_open"),
+      ev("b", "room_created"),
+      // Only one ever plays a round.
+      ev("a", "joined", { room_code: "GSTE" }),
+      ev("b", "joined", { room_code: "GSTE" }),
+      ev("a", "game_started"),
+      ev("a", "clue_sent"),
+      ev("a", "guess_locked", { room_code: "GSTE" }),
+    ],
+    "week"
   );
+
+  assert.equal(summary.sessions, 3);
+  assert.equal(summary.events, 13);
+
+  const step = (name: string) => summary.funnel.find((f) => f.step === name)!;
+  assert.equal(step("app_open").sessions, 3, "a session counts once however often it fires");
+  assert.equal(step("app_open").events, 4);
+  assert.equal(step("app_open").conversion, 100);
+  assert.equal(step("app_open").dropoff, null, "the first step has nothing to drop from");
+  assert.equal(step("create_open").sessions, 2);
+  assert.equal(step("create_open").dropoff, round(100 / 3), "one of three did not start creating");
+  assert.equal(step("guess_locked").sessions, 1);
+  assert.equal(step("guess_locked").conversion, round(100 / 3));
+  assert.equal(step("game_finished").sessions, 0);
+
+  // Two of the three sessions opened the app and never locked a guess.
+  assert.equal(summary.dropoutRate, round(200 / 3));
+
+  // Both devices joined the room, one of them played.
+  assert.deepEqual(summary.rooms, [{ room_code: "GSTE", joined: 2, played: 1, last_seen: ts }]);
+});
+
+test("clicks are grouped by control and page, with a session count beside the total", () => {
+  const ts = new Date().toISOString();
+  const click = (session_id: string, target: string, path: string) => ({
+    session_id,
+    name: "click",
+    room_code: null,
+    path,
+    props: { target },
+    ts,
+  });
+
+  const summary = foldEvents(
+    [
+      click("a", "join-room", "/room/[code]"),
+      click("a", "join-room", "/room/[code]"),
+      click("b", "join-room", "/room/[code]"),
+      click("b", "create-room", "/"),
+      // The same label on a different page is a different control.
+      click("b", "join-room", "/"),
+      { session_id: "c", name: "click", room_code: null, path: "/", props: {}, ts },
+    ],
+    "day"
+  );
+
+  assert.equal(summary.clicks[0].target, "join-room");
+  assert.equal(summary.clicks[0].path, "/room/[code]");
+  assert.equal(summary.clicks[0].clicks, 3);
+  assert.equal(summary.clicks[0].sessions, 2, "three clicks, two people");
+  assert.ok(
+    summary.clicks.some((c) => c.target === "(unlabelled)"),
+    "an unlabelled control still shows up, which is how a missing data-ev gets noticed"
+  );
+});
+
+test("session length is a median, and nonsense durations are ignored", () => {
+  const ts = new Date().toISOString();
+  const end = (session_id: string, seconds: unknown) => ({
+    session_id,
+    name: "session_end",
+    room_code: null,
+    path: "/",
+    props: { seconds },
+    ts,
+  });
+
+  const summary = foldEvents(
+    [end("a", 10), end("b", 30), end("c", 200), end("d", -5), end("e", 999999), end("f", "soon")],
+    "all"
+  );
+  assert.equal(summary.medianSessionSeconds, 30);
+  assert.equal(summary.dropoutRate, null, "no app_open means no rate, not zero");
 });

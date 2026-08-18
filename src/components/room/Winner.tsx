@@ -1,8 +1,10 @@
 "use client";
 
 import Link from "next/link";
+import { useEffect } from "react";
 import { useLang } from "@/components/LangProvider";
 import Scoreboard from "@/components/Scoreboard";
+import { track } from "@/lib/client/track";
 import type { RunAction } from "./RoomClient";
 import type { Player, RoomState } from "@/lib/types";
 
@@ -21,6 +23,12 @@ export default function Winner({
   const { room, players } = state;
   const top = [...room.teams].sort((a, b) => b.score - a.score)[0];
 
+  // The last step of the funnel: a game that actually reached an end.
+  useEffect(() => {
+    track("game_finished", { rounds: room.round_no, score: top?.score ?? 0 });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [room.id]);
+
   return (
     <section className="card winner">
       <div className="crown">👑</div>
@@ -35,11 +43,11 @@ export default function Winner({
 
       <div className="actions" style={{ justifyContent: "center" }}>
         {me.is_host ? (
-          <button className="btn" onClick={() => void run("again")} disabled={busy}>
+          <button className="btn" data-ev="play-again" onClick={() => void run("again")} disabled={busy}>
             {t("playAgain")}
           </button>
         ) : null}
-        <Link className="btn ghost" href="/leaderboard">
+        <Link className="btn ghost" data-ev="winner-leaderboard" href="/leaderboard">
           🏆 {t("leaderboardLink")}
         </Link>
       </div>

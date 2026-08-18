@@ -4,7 +4,7 @@
  * by the client for previews.
  */
 
-import { scalesForCategories, type Scale } from "../scales";
+import type { Scale } from "../scales";
 import type { BetSide, Player, Team } from "../types";
 
 export const PALETTE = ["#5ee0c5", "#ff7a9c", "#7aa2ff", "#ffcf5c", "#5ee08a", "#c08bff"];
@@ -70,9 +70,16 @@ export function randomTarget(): number {
 // ---------------------------------------------------------------------
 // Round preparation
 // ---------------------------------------------------------------------
-export function pickScale(categories: string[], usedKeys: string[]): Scale {
-  const pool = scalesForCategories(categories);
-  const fresh = pool.filter((s) => !usedKeys.includes(s.key));
+/**
+ * Deals the next scale from an already-narrowed pool, preferring pairs the
+ * room has not seen yet. The pool is passed in rather than looked up so this
+ * stays pure — the caller decides whether it came from the database or the
+ * built-in catalogue.
+ */
+export function pickScale(pool: Scale[], usedKeys: string[]): Scale {
+  if (pool.length === 0) throw new Error("pickScale needs a non-empty pool");
+  const used = new Set(usedKeys);
+  const fresh = pool.filter((s) => !used.has(s.key));
   const from = fresh.length > 0 ? fresh : pool;
   return from[Math.floor(Math.random() * from.length)];
 }
@@ -123,6 +130,17 @@ export function leader(teams: Team[]): Team | null {
 export function cleanName(raw: unknown, fallback: string): string {
   const s = typeof raw === "string" ? raw.trim().replace(/\s+/g, " ") : "";
   return (s || fallback).slice(0, NAME_MAX_LEN);
+}
+
+/**
+ * The device id a browser sends so its games can be stitched together on the
+ * leaderboard. It is not a credential — it grants nothing on its own — but it
+ * is still normalised hard so nothing surprising reaches the database.
+ */
+export function cleanUid(raw: unknown): string | null {
+  if (typeof raw !== "string") return null;
+  const s = raw.trim().toLowerCase();
+  return /^[0-9a-f]{16,64}$/.test(s) ? s : null;
 }
 
 export function cleanClue(raw: unknown): string {

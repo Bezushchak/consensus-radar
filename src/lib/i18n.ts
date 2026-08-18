@@ -146,7 +146,7 @@ export const STRINGS: Dict = {
   colBets: { ua: "Ставок вгадано", en: "Bets won" },
   colTimes: { ua: "Разів у грі", en: "Times played" },
   colBullseyes: { ua: "Яблучок", en: "Bullseyes" },
-  lbHint: { ua: "Без реєстрації гравці зводяться за ім'ям — однакові імена зливаються в один рядок.", en: "With no sign-in, players are matched by name — identical names merge into one row." },
+  lbHint: { ua: "Без реєстрації гравець — це його пристрій: усі ігри з цього браузера зводяться в один рядок. Інший браузер або телефон буде окремим гравцем.", en: "With no sign-in, a player is their device: every game from this browser counts as one row. Another browser or phone shows up as a separate player." },
 };
 
 export function t(lang: Lang, key: string, vars?: Record<string, string | number>): string {
