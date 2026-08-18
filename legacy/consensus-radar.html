@@ -1,0 +1,575 @@
+<!doctype html>
+<html lang="uk">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1" />
+<title>Consensus Radar</title>
+<style>
+  :root{
+    --bg:#0c1020; --bg2:#141a31; --panel:#1a2140; --panel2:#222b52;
+    --ink:#eef2ff; --muted:#9aa6d6; --line:#2c3566;
+    --accent:#5ee0c5; --accent2:#7aa2ff; --warn:#ff7a9c;
+    --gold:#ffcf5c; --good:#5ee08a;
+    --left:#ff7a9c; --right:#7aa2ff;
+    --shadow:0 18px 50px rgba(0,0,0,.45);
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%}
+  body{
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Inter,Roboto,Helvetica,Arial,sans-serif;
+    background:
+      radial-gradient(1200px 700px at 50% -10%, #1b2347 0%, transparent 60%),
+      radial-gradient(900px 600px at 90% 110%, #15244a 0%, transparent 55%),
+      var(--bg);
+    color:var(--ink);
+    -webkit-font-smoothing:antialiased;
+  }
+  .wrap{max-width:860px;margin:0 auto;padding:20px 18px 60px;}
+  header.app{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:14px;}
+  .brand{display:flex;align-items:center;gap:12px;}
+  .logo{width:42px;height:42px;border-radius:12px;display:grid;place-items:center;
+    background:linear-gradient(135deg,var(--accent),var(--accent2));box-shadow:var(--shadow);}
+  .logo svg{width:26px;height:26px;}
+  .brand h1{font-size:20px;margin:0;letter-spacing:.3px}
+  .brand p{margin:0;font-size:12px;color:var(--muted)}
+  .lang{display:flex;background:var(--panel);border:1px solid var(--line);border-radius:999px;overflow:hidden}
+  .lang button{background:none;border:0;color:var(--muted);padding:7px 13px;font-weight:600;cursor:pointer;font-size:13px}
+  .lang button.active{background:linear-gradient(135deg,var(--accent),var(--accent2));color:#06121f}
+
+  .card{background:linear-gradient(180deg,var(--panel),var(--bg2));border:1px solid var(--line);
+    border-radius:22px;padding:22px;box-shadow:var(--shadow)}
+  .card + .card{margin-top:16px}
+  h2{margin:0 0 6px;font-size:22px}
+  .sub{color:var(--muted);font-size:14px;margin:0 0 18px}
+  label.fl{display:block;font-size:13px;color:var(--muted);margin:14px 0 6px;font-weight:600}
+  input[type=text],select{width:100%;background:var(--bg);border:1px solid var(--line);color:var(--ink);
+    padding:12px 14px;border-radius:12px;font-size:15px;outline:none}
+  input[type=text]:focus,select:focus{border-color:var(--accent2)}
+  .row{display:flex;gap:10px;flex-wrap:wrap}
+  .teaminput{display:flex;align-items:center;gap:10px;margin-bottom:8px}
+  .teaminput .dot{width:14px;height:14px;border-radius:50%;flex:0 0 auto}
+  .teaminput input{flex:1}
+  .teaminput button{flex:0 0 auto}
+
+  button.btn{appearance:none;border:0;cursor:pointer;font-weight:700;font-size:15px;
+    padding:13px 20px;border-radius:14px;color:#06121f;
+    background:linear-gradient(135deg,var(--accent),var(--accent2));box-shadow:var(--shadow);
+    transition:transform .08s ease,filter .15s}
+  button.btn:hover{filter:brightness(1.07)}
+  button.btn:active{transform:translateY(1px)}
+  button.btn.ghost{background:var(--panel2);color:var(--ink);box-shadow:none;border:1px solid var(--line)}
+  button.btn.warn{background:linear-gradient(135deg,#ff9a6c,var(--warn));color:#1b0712}
+  button.btn.wide{width:100%}
+  button.btn.sm{padding:9px 14px;font-size:13px}
+  .actions{display:flex;gap:10px;flex-wrap:wrap;margin-top:18px}
+  .pill{display:inline-flex;align-items:center;gap:7px;background:var(--panel2);border:1px solid var(--line);
+    color:var(--muted);border-radius:999px;padding:6px 13px;font-size:12.5px;font-weight:600}
+
+  /* GAUGE */
+  .gaugewrap{position:relative;width:100%;max-width:540px;margin:6px auto 0;}
+  svg.gauge{width:100%;height:auto;display:block;overflow:hidden;pointer-events:none}
+  .poles{display:flex;justify-content:space-between;margin-top:2px;gap:12px}
+  .pole{flex:1;padding:12px 14px;border-radius:14px;font-weight:800;font-size:16px;line-height:1.2}
+  .pole.l{background:linear-gradient(135deg,rgba(255,122,156,.18),rgba(255,122,156,.05));
+    border:1px solid rgba(255,122,156,.4);color:#ffd0db;text-align:left}
+  .pole.r{background:linear-gradient(135deg,rgba(122,162,255,.18),rgba(122,162,255,.05));
+    border:1px solid rgba(122,162,255,.4);color:#cfdcff;text-align:right}
+  .slider{position:relative;z-index:3;width:100%;margin:20px 0 4px;-webkit-appearance:none;appearance:none;height:14px;border-radius:999px;
+    background:linear-gradient(90deg,var(--left),#6a4b8a,var(--right));outline:none}
+  .slider::-webkit-slider-thumb{-webkit-appearance:none;width:30px;height:30px;border-radius:50%;
+    background:#fff;border:4px solid var(--accent);cursor:grab;box-shadow:0 6px 18px rgba(0,0,0,.5)}
+  .slider::-moz-range-thumb{width:30px;height:30px;border-radius:50%;background:#fff;border:4px solid var(--accent);cursor:grab}
+  .turninfo{display:flex;align-items:center;justify-content:center;gap:10px;margin-bottom:6px;text-align:center;flex-wrap:wrap}
+  .scaleLabel{text-align:center;color:var(--muted);font-size:13px;margin:14px 0 2px}
+
+  .scoreboard{display:flex;flex-wrap:wrap;gap:10px;margin-top:4px}
+  .team{flex:1;min-width:120px;background:var(--bg);border:1px solid var(--line);border-radius:14px;padding:12px 14px}
+  .team.active{border-color:var(--accent);box-shadow:0 0 0 2px rgba(94,224,197,.25)}
+  .team .nm{display:flex;align-items:center;gap:8px;font-weight:700;font-size:15px}
+  .team .nm .dot{width:12px;height:12px;border-radius:50%}
+  .team .sc{font-size:30px;font-weight:800;margin-top:4px}
+  .team .sc small{font-size:13px;color:var(--muted);font-weight:600}
+
+  .reveal-points{text-align:center;font-size:54px;font-weight:900;margin:6px 0 0;
+    background:linear-gradient(135deg,var(--gold),var(--accent));-webkit-background-clip:text;background-clip:text;color:transparent}
+  .reveal-msg{text-align:center;color:var(--muted);font-size:15px;margin-top:2px}
+  .center-narrow{max-width:520px;margin:0 auto}
+  .hidden{display:none !important}
+  .secret{text-align:center;background:rgba(255,207,92,.1);border:1px dashed rgba(255,207,92,.5);
+    border-radius:14px;padding:14px;margin:16px auto 0;max-width:420px}
+  .secret b{font-size:28px;color:var(--gold)}
+  .big-target{text-align:center;font-size:13px;color:var(--muted);margin-top:4px}
+  .stepnote{font-size:13px;color:var(--muted);text-align:center;margin-top:14px;line-height:1.5}
+  .winner{text-align:center}
+  .winner .crown{font-size:60px}
+  .footer{margin-top:26px;text-align:center;color:var(--muted);font-size:12px}
+  .toggleline{display:flex;align-items:center;gap:10px;margin-top:12px;flex-wrap:wrap}
+  .chk{display:flex;align-items:center;gap:8px;background:var(--bg);border:1px solid var(--line);
+    border-radius:12px;padding:10px 14px;cursor:pointer;font-size:14px;user-select:none}
+  .chk input{width:18px;height:18px;accent-color:var(--accent)}
+  @media(max-width:560px){.brand h1{font-size:17px}.pole{font-size:14px}}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header class="app">
+    <div class="brand">
+      <div class="logo">
+        <svg viewBox="0 0 24 24" fill="none" stroke="#06121f" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M22 12A10 10 0 1 1 12 2"/><path d="M12 12l7-4"/><circle cx="12" cy="12" r="2" fill="#06121f"/>
+        </svg>
+      </div>
+      <div>
+        <h1>Consensus Radar</h1>
+        <p data-i="tagline">Tune into your team's wavelength</p>
+      </div>
+    </div>
+    <div class="lang">
+      <button id="langUA" onclick="setLang('ua')">UA</button>
+      <button id="langEN" onclick="setLang('en')">EN</button>
+    </div>
+  </header>
+
+  <!-- ============ SETUP ============ -->
+  <section id="screen-setup" class="card">
+    <h2 data-i="setupTitle">Game setup</h2>
+    <p class="sub" data-i="setupSub">One teammate sees a hidden spot on the dial and gives a clue. The team moves the marker as close as they can.</p>
+
+    <label class="fl" data-i="teamsLabel">Teams</label>
+    <div id="teamList"></div>
+    <div class="row" style="margin-top:8px">
+      <button class="btn ghost sm" onclick="addTeam()" data-i="addTeam">+ Add team</button>
+    </div>
+
+    <label class="fl" data-i="catLabel">Scale categories</label>
+    <div class="toggleline">
+      <label class="chk"><input type="checkbox" id="catGeneral" checked> <span data-i="catGeneral">General &amp; fun</span></label>
+      <label class="chk"><input type="checkbox" id="catAnalytics" checked> <span data-i="catAnalytics">Analytics team</span></label>
+    </div>
+
+    <div class="row" style="margin-top:18px">
+      <div style="flex:1;min-width:160px">
+        <label class="fl" data-i="targetLabel">Play to (points)</label>
+        <select id="targetScore">
+          <option value="15">15</option>
+          <option value="20" selected>20</option>
+          <option value="25">25</option>
+          <option value="30">30</option>
+          <option value="0" data-i="endless">Endless</option>
+        </select>
+      </div>
+    </div>
+
+    <div class="actions">
+      <button class="btn wide" onclick="startGame()" data-i="startBtn">Start game</button>
+    </div>
+    <p class="stepnote" data-i="setupNote">Tip: pass the laptop to the clue-giver, then turn it back to the team to guess.</p>
+  </section>
+
+  <!-- ============ HANDOFF (pass to clue giver) ============ -->
+  <section id="screen-handoff" class="card hidden center-narrow">
+    <h2 data-i="handoffTitle">Pass the laptop</h2>
+    <p class="sub" id="handoffSub"></p>
+    <div class="actions"><button class="btn wide" onclick="goClue()" data-i="imReady">I'm the clue-giver — show me the spot</button></div>
+  </section>
+
+  <!-- ============ CLUE (clue giver sees target) ============ -->
+  <section id="screen-clue" class="card hidden">
+    <div class="turninfo">
+      <span class="pill" id="cluePill"></span>
+    </div>
+    <h2 style="text-align:center" data-i="clueTitle">Your secret spot</h2>
+    <p class="sub" style="text-align:center" data-i="clueSub">Give a clue that points the team to this spot. Don't say a number!</p>
+
+    <div class="scaleLabel" id="clueScaleName"></div>
+    <div class="gaugewrap"><div id="clueGauge"></div></div>
+    <div class="poles"><div class="pole l" id="cluePoleL"></div><div class="pole r" id="cluePoleR"></div></div>
+
+    <div class="secret">
+      <div data-i="targetIs">The marker should land here</div>
+      <b id="clueTargetPct"></b>
+    </div>
+
+    <div class="actions">
+      <button class="btn warn wide" onclick="goGuess()" data-i="hideBtn">Hide spot &amp; pass to the team</button>
+    </div>
+  </section>
+
+  <!-- ============ GUESS (team moves marker) ============ -->
+  <section id="screen-guess" class="card hidden">
+    <div class="turninfo"><span class="pill" id="guessPill"></span></div>
+    <h2 style="text-align:center" data-i="guessTitle">Where's the spot?</h2>
+    <p class="sub" style="text-align:center" id="guessSub"></p>
+
+    <div class="scaleLabel" id="guessScaleName"></div>
+    <div class="gaugewrap"><div id="guessGauge"></div></div>
+    <div class="poles"><div class="pole l" id="guessPoleL"></div><div class="pole r" id="guessPoleR"></div></div>
+
+    <input type="range" min="0" max="100" value="50" class="slider" id="guessSlider" oninput="onSlide()">
+    <div class="big-target" id="guessVal"></div>
+
+    <div class="actions">
+      <button class="btn wide" onclick="lockGuess()" data-i="lockBtn">Lock in the marker</button>
+    </div>
+  </section>
+
+  <!-- ============ REVEAL ============ -->
+  <section id="screen-reveal" class="card hidden">
+    <div class="scaleLabel" id="revealScaleName"></div>
+    <div class="gaugewrap"><div id="revealGauge"></div></div>
+    <div class="poles"><div class="pole l" id="revealPoleL"></div><div class="pole r" id="revealPoleR"></div></div>
+
+    <div class="reveal-points" id="revealPoints"></div>
+    <div class="reveal-msg" id="revealMsg"></div>
+
+    <div class="actions">
+      <button class="btn wide" onclick="nextRound()" data-i="nextBtn">Next round</button>
+    </div>
+  </section>
+
+  <!-- ============ SCOREBOARD (always under play) ============ -->
+  <section id="scoreCard" class="card hidden">
+    <h2 style="font-size:16px;margin-bottom:10px" data-i="scoresTitle">Scores</h2>
+    <div class="scoreboard" id="scoreboard"></div>
+    <div class="actions">
+      <button class="btn ghost sm" onclick="newGame()" data-i="resetBtn">Reset game</button>
+    </div>
+  </section>
+
+  <!-- ============ WINNER ============ -->
+  <section id="screen-winner" class="card hidden winner">
+    <div class="crown">👑</div>
+    <h2 id="winnerName"></h2>
+    <p class="sub" id="winnerSub"></p>
+    <div class="scoreboard" id="finalBoard" style="margin-bottom:8px"></div>
+    <div class="actions"><button class="btn wide" onclick="newGame()" data-i="playAgain">Play again</button></div>
+  </section>
+
+  <div class="footer">Consensus Radar · <span data-i="footer">a Wavelength-style calibration game</span></div>
+</div>
+
+<script>
+/* ================= i18n ================= */
+const I18N = {
+  tagline:{ua:"Налаштуйтесь на хвилю команди",en:"Tune into your team's wavelength"},
+  setupTitle:{ua:"Налаштування гри",en:"Game setup"},
+  setupSub:{ua:"Один гравець бачить таємну точку на шкалі й дає clue. Команда ставить маркер якомога ближче.",
+            en:"One teammate sees a hidden spot on the dial and gives a clue. The team moves the marker as close as they can."},
+  teamsLabel:{ua:"Команди",en:"Teams"},
+  addTeam:{ua:"+ Додати команду",en:"+ Add team"},
+  remove:{ua:"Видалити",en:"Remove"},
+  catLabel:{ua:"Категорії шкал",en:"Scale categories"},
+  catGeneral:{ua:"Загальні та смішні",en:"General & fun"},
+  catAnalytics:{ua:"Для аналітиків",en:"Analytics team"},
+  targetLabel:{ua:"Грати до (очок)",en:"Play to (points)"},
+  endless:{ua:"Без ліміту",en:"Endless"},
+  startBtn:{ua:"Почати гру",en:"Start game"},
+  setupNote:{ua:"Порада: передайте ноутбук тому, хто дає clue, а потім поверніть команді для відгадування.",
+             en:"Tip: pass the laptop to the clue-giver, then turn it back to the team to guess."},
+  handoffTitle:{ua:"Передайте ноутбук",en:"Pass the laptop"},
+  imReady:{ua:"Я даю clue — покажіть точку",en:"I'm the clue-giver — show me the spot"},
+  clueTitle:{ua:"Ваша таємна точка",en:"Your secret spot"},
+  clueSub:{ua:"Дайте clue, що наведе команду на цю точку. Не називайте число!",
+           en:"Give a clue that points the team to this spot. Don't say a number!"},
+  targetIs:{ua:"Маркер має стати сюди",en:"The marker should land here"},
+  hideBtn:{ua:"Сховати точку та передати команді",en:"Hide spot & pass to the team"},
+  guessTitle:{ua:"Де ця точка?",en:"Where's the spot?"},
+  lockBtn:{ua:"Зафіксувати маркер",en:"Lock in the marker"},
+  nextBtn:{ua:"Наступний раунд",en:"Next round"},
+  scoresTitle:{ua:"Рахунок",en:"Scores"},
+  resetBtn:{ua:"Скинути гру",en:"Reset game"},
+  playAgain:{ua:"Зіграти ще",en:"Play again"},
+  footer:{ua:"гра-калібрування у стилі Wavelength",en:"a Wavelength-style calibration game"},
+  pts:{ua:"очок",en:"pts"},
+  round:{ua:"Раунд",en:"Round"},
+  gives:{ua:"дає clue",en:"gives the clue"},
+  guesses:{ua:"відгадує",en:"guesses"},
+  handoffSub:{ua:t=>`Передайте ноутбук гравцю з команди «${t}», який даватиме clue. Решта — не підглядати!`,
+              en:t=>`Hand the laptop to the clue-giver from team "${t}". Everyone else — no peeking!`},
+  guessSub:{ua:t=>`Команда «${t}», обговоріть і поставте маркер.`,
+            en:t=>`Team "${t}", discuss and place the marker.`},
+  marker:{ua:"Маркер",en:"Marker"},
+  msgBull:{ua:"В яблучко! Ідеальна калібровка 🎯",en:"Bullseye! Perfect calibration 🎯"},
+  msgClose:{ua:"Близько! Гарне відчуття одне одного.",en:"Close! Nicely tuned in."},
+  msgFar:{ua:"Мимо — нуль за цей раунд.",en:"Missed it — zero this round."},
+  msgOpp:{ua:"Зовсім протилежний бік. −2.",en:"Totally opposite side. −2."},
+  winnerName:{ua:t=>`Перемогла команда «${t}»!`,en:t=>`Team "${t}" wins!`},
+  winnerSub:{ua:"Ваші хвилі збіглися найкраще.",en:"Your wavelengths matched best."},
+  needName:{ua:"Дайте назву кожній команді.",en:"Give every team a name."},
+};
+let LANG = 'ua';
+function setLang(l){LANG=l;document.documentElement.lang=l;
+  document.getElementById('langUA').classList.toggle('active',l==='ua');
+  document.getElementById('langEN').classList.toggle('active',l==='en');
+  applyI18n(); renderDynamic();}
+function tr(k){const v=I18N[k];return v?(v[LANG]):k;}
+function applyI18n(){document.querySelectorAll('[data-i]').forEach(el=>{const k=el.getAttribute('data-i');if(I18N[k])el.textContent=I18N[k][LANG];});}
+
+/* ================= SCALES ================= */
+const SCALES_GENERAL = [
+  {l:{ua:"Ризиковано",en:"Risky"}, r:{ua:"Безпечно",en:"Safe"}},
+  {l:{ua:"Смішно",en:"Funny"}, r:{ua:"Крінжово",en:"Cringe"}},
+  {l:{ua:"Терміново",en:"Urgent"}, r:{ua:"Може почекати",en:"Can wait"}},
+  {l:{ua:"Геніально",en:"Genius"}, r:{ua:"Повна дурня",en:"Total nonsense"}},
+  {l:{ua:"Дуже дорого",en:"Very expensive"}, r:{ua:"Дуже дешево",en:"Very cheap"}},
+  {l:{ua:"Корисно",en:"Useful"}, r:{ua:"Марно",en:"Useless"}},
+  {l:{ua:"Переоцінено",en:"Overrated"}, r:{ua:"Недооцінено",en:"Underrated"}},
+  {l:{ua:"Гаряче",en:"Hot"}, r:{ua:"Холодне",en:"Cold"}},
+  {l:{ua:"Звичайне",en:"Normal"}, r:{ua:"Дивне",en:"Weird"}},
+  {l:{ua:"Складно",en:"Hard"}, r:{ua:"Легко",en:"Easy"}},
+  {l:{ua:"Інтроверт",en:"Introvert"}, r:{ua:"Екстраверт",en:"Extrovert"}},
+  {l:{ua:"Недооцінений фільм",en:"Underrated movie"}, r:{ua:"Хайповий фільм",en:"Hyped movie"}},
+];
+const SCALES_ANALYTICS = [
+  {l:{ua:"Статистично значуще",en:"Statistically significant"}, r:{ua:"Просто шум",en:"Just noise"}},
+  {l:{ua:"Дашборд",en:"Dashboard"}, r:{ua:"Ручний експорт",en:"Manual export"}},
+  {l:{ua:"Сигнал",en:"Signal"}, r:{ua:"Шум",en:"Noise"}},
+  {l:{ua:"Кореляція",en:"Correlation"}, r:{ua:"Причинність",en:"Causation"}},
+  {l:{ua:"Чисті дані",en:"Clean data"}, r:{ua:"Брудні дані",en:"Dirty data"}},
+  {l:{ua:"Варто A/B-тестити",en:"Worth A/B testing"}, r:{ua:"І так очевидно",en:"Obvious already"}},
+  {l:{ua:"p < 0.05",en:"p < 0.05"}, r:{ua:"p = 0.5",en:"p = 0.5"}},
+  {l:{ua:"Data-driven",en:"Data-driven"}, r:{ua:"На відчуттях",en:"Gut feeling"}},
+  {l:{ua:"Треба ще даних",en:"Need more data"}, r:{ua:"Даних достатньо",en:"Enough data"}},
+  {l:{ua:"Справжня метрика",en:"Real metric"}, r:{ua:"Vanity-метрика",en:"Vanity metric"}},
+  {l:{ua:"Реал-тайм",en:"Real-time"}, r:{ua:"Раз на квартал",en:"Once a quarter"}},
+  {l:{ua:"Автоматизувати",en:"Automate"}, r:{ua:"Зробити руками",en:"Do it manually"}},
+  {l:{ua:"Витік у воронці",en:"Funnel leak"}, r:{ua:"Здорова воронка",en:"Healthy funnel"}},
+  {l:{ua:"Викид (outlier)",en:"Outlier"}, r:{ua:"Типове значення",en:"Typical value"}},
+];
+
+/* ================= STATE ================= */
+const PALETTE = ["#5ee0c5","#ff7a9c","#7aa2ff","#ffcf5c","#5ee08a","#c08bff"];
+let state = null;
+
+function defaultTeams(){
+  return [
+    {name:"", color:PALETTE[0], score:0},
+    {name:"", color:PALETTE[1], score:0},
+  ];
+}
+let setupTeams = defaultTeams();
+
+function renderTeamInputs(){
+  const c=document.getElementById('teamList'); c.innerHTML='';
+  setupTeams.forEach((t,i)=>{
+    const row=document.createElement('div'); row.className='teaminput';
+    row.innerHTML=`<span class="dot" style="background:${t.color}"></span>
+      <input type="text" value="${t.name.replace(/"/g,'&quot;')}" placeholder="${LANG==='ua'?'Команда '+(i+1):'Team '+(i+1)}" oninput="setupTeams[${i}].name=this.value">
+      ${setupTeams.length>2?`<button class="btn ghost sm" onclick="delTeam(${i})">✕</button>`:''}`;
+    c.appendChild(row);
+  });
+}
+function addTeam(){ if(setupTeams.length>=6)return;
+  setupTeams.push({name:"",color:PALETTE[setupTeams.length%PALETTE.length],score:0}); renderTeamInputs(); }
+function delTeam(i){ setupTeams.splice(i,1); renderTeamInputs(); }
+
+/* ================= GAUGE DRAW ================= */
+// semicircle: p(0..100) -> angle 180(left)..0(right)
+function polar(cx,cy,r,deg){const a=deg*Math.PI/180;return [cx+r*Math.cos(a), cy-r*Math.sin(a)];}
+function arcPath(cx,cy,r,a0,a1){ // a0,a1 in degrees, draw from a0 to a1 (a0>a1 going clockwise across top)
+  const [x0,y0]=polar(cx,cy,r,a0);const [x1,y1]=polar(cx,cy,r,a1);
+  const large = Math.abs(a0-a1)>180?1:0;
+  return `M ${x0} ${y0} A ${r} ${r} 0 ${large} 1 ${x1} ${y1}`;
+}
+function ang(p){return 180 - p*1.8;}
+
+function drawGauge(target, marker, showTarget){
+  const W=540,H=282,cx=270,cy=270,R=235,rin=120;
+  let bands="";
+  if(showTarget && target!=null){
+    // scoring bands centered on target: +5 (<=5), +3 (<=12)
+    const seg=(lo,hi,col)=>{
+      lo=Math.max(0,lo);hi=Math.min(100,hi);if(hi<=lo)return"";
+      const a0=ang(lo),a1=ang(hi);
+      const [ox0,oy0]=polar(cx,cy,R,a0),[ox1,oy1]=polar(cx,cy,R,a1);
+      const [ix1,iy1]=polar(cx,cy,rin,a1),[ix0,iy0]=polar(cx,cy,rin,a0);
+      const large=Math.abs(a0-a1)>180?1:0;
+      return `<path d="M ${ox0} ${oy0} A ${R} ${R} 0 ${large} 1 ${ox1} ${oy1} L ${ix1} ${iy1} A ${rin} ${rin} 0 ${large} 0 ${ix0} ${iy0} Z" fill="${col}"/>`;
+    };
+    bands += seg(target-12,target-5,"rgba(94,224,138,.45)");
+    bands += seg(target+5,target+12,"rgba(94,224,138,.45)");
+    bands += seg(target-5,target+5,"rgba(255,207,92,.85)");
+  }
+  // base ring
+  const base=`<path d="${arcPath(cx,cy,R,180,0)}" fill="none" stroke="#2c3566" stroke-width="${R-rin}" stroke-linecap="butt" transform="" />`;
+  // we instead draw a thick band manually:
+  const ringOuter=arcPath(cx,cy,R,180,0), ringInner=arcPath(cx,cy,rin,0,180);
+  const ring=`<path d="${ringOuter} L ${polar(cx,cy,rin,0).join(' ')} ${arcPathRev(cx,cy,rin,0,180)} Z" fill="#161d3c" stroke="#2c3566" stroke-width="1.5"/>`;
+  // ticks
+  let ticks="";
+  for(let p=0;p<=100;p+=10){const [x0,y0]=polar(cx,cy,R-2,ang(p));const [x1,y1]=polar(cx,cy,R-16,ang(p));
+    ticks+=`<line x1="${x0}" y1="${y0}" x2="${x1}" y2="${y1}" stroke="#46508a" stroke-width="2"/>`;}
+  // needle
+  let needle="";
+  if(marker!=null){
+    const [nx,ny]=polar(cx,cy,R-8,ang(marker));
+    const [bx,by]=polar(cx,cy,18,ang(marker)+90);
+    const [bx2,by2]=polar(cx,cy,18,ang(marker)-90);
+    needle=`<polygon points="${nx},${ny} ${bx},${by} ${bx2},${by2}" fill="#ffffff"/>
+            <line x1="${cx}" y1="${cy}" x2="${nx}" y2="${ny}" stroke="#fff" stroke-width="3"/>`;
+  }
+  return `<svg class="gauge" viewBox="0 0 ${W} ${H}">
+    ${ring}${bands}${ticks}
+    <circle cx="${cx}" cy="${cy}" r="${rin}" fill="#0c1020" stroke="#2c3566" stroke-width="1.5"/>
+    ${needle}
+    <circle cx="${cx}" cy="${cy}" r="14" fill="#5ee0c5"/>
+    <circle cx="${cx}" cy="${cy}" r="6" fill="#06121f"/>
+  </svg>`;
+}
+function arcPathRev(cx,cy,r,a0,a1){const [x1,y1]=polar(cx,cy,r,a1);const large=Math.abs(a0-a1)>180?1:0;
+  return `A ${r} ${r} 0 ${large} 0 ${x1} ${y1}`;}
+
+/* ================= SCORING ================= */
+function scoreFor(target,guess){
+  const d=Math.abs(target-guess);
+  if(d<=5) return {pts:5,key:'msgBull'};
+  if(d<=12) return {pts:3,key:'msgClose'};
+  if(d<=40) return {pts:0,key:'msgFar'};
+  return {pts:-2,key:'msgOpp'};
+}
+
+/* ================= FLOW ================= */
+function show(id){['screen-setup','screen-handoff','screen-clue','screen-guess','screen-reveal','screen-winner']
+  .forEach(s=>document.getElementById(s).classList.add('hidden'));
+  document.getElementById(id).classList.remove('hidden');
+  const playing=(id!=='screen-setup' && id!=='screen-winner');
+  document.getElementById('scoreCard').classList.toggle('hidden',!playing);
+}
+
+function buildScalePool(){
+  let pool=[];
+  if(document.getElementById('catGeneral').checked) pool=pool.concat(SCALES_GENERAL);
+  if(document.getElementById('catAnalytics').checked) pool=pool.concat(SCALES_ANALYTICS);
+  if(pool.length===0) pool=SCALES_GENERAL.concat(SCALES_ANALYTICS);
+  return pool;
+}
+
+function startGame(){
+  // validate names -> autofill blanks
+  setupTeams.forEach((t,i)=>{ if(!t.name.trim()) t.name = (LANG==='ua'?'Команда '+(i+1):'Team '+(i+1)); t.score=0; });
+  state={
+    teams: setupTeams.map(t=>({...t})),
+    pool: buildScalePool(),
+    used: [],
+    activeTeam: 0,
+    target: 50,
+    marker: 50,
+    scale: null,
+    round: 1,
+    goal: parseInt(document.getElementById('targetScore').value,10),
+  };
+  prepRound();
+  renderScoreboard();
+  goHandoff();
+}
+
+function prepRound(){
+  // pick fresh scale
+  if(state.used.length>=state.pool.length) state.used=[];
+  let idx;
+  do{ idx=Math.floor(Math.random()*state.pool.length); }while(state.used.includes(idx) && state.used.length<state.pool.length);
+  state.used.push(idx);
+  state.scale=state.pool[idx];
+  state.target=Math.floor(Math.random()*91)+5; // 5..95
+  state.marker=50;
+}
+
+function poleText(el,side){el.textContent=state.scale[side][LANG];}
+function fillPoles(prefix){
+  document.getElementById(prefix+'PoleL').textContent=state.scale.l[LANG];
+  document.getElementById(prefix+'PoleR').textContent=state.scale.r[LANG];
+  document.getElementById(prefix+'ScaleName').textContent=
+    state.scale.l[LANG]+'  ↔  '+state.scale.r[LANG];
+}
+
+function goHandoff(){
+  const t=state.teams[state.activeTeam];
+  document.getElementById('handoffSub').textContent=I18N.handoffSub[LANG](t.name);
+  show('screen-handoff');
+}
+function goClue(){
+  fillPoles('clue');
+  document.getElementById('clueGauge').innerHTML=drawGauge(state.target,null,true);
+  document.getElementById('cluePill').textContent=
+    `${tr('round')} ${state.round} · ${state.teams[state.activeTeam].name} ${tr('gives')}`;
+  document.getElementById('clueTargetPct').textContent=state.target+'%';
+  show('screen-clue');
+}
+function goGuess(){
+  fillPoles('guess');
+  document.getElementById('guessGauge').innerHTML=drawGauge(null,state.marker,false);
+  document.getElementById('guessPill').textContent=
+    `${tr('round')} ${state.round} · ${state.teams[state.activeTeam].name} ${tr('guesses')}`;
+  document.getElementById('guessSub').textContent=I18N.guessSub[LANG](state.teams[state.activeTeam].name);
+  const s=document.getElementById('guessSlider'); s.value=state.marker; onSlide();
+  show('screen-guess');
+}
+function onSlide(){
+  state.marker=parseInt(document.getElementById('guessSlider').value,10);
+  document.getElementById('guessGauge').innerHTML=drawGauge(null,state.marker,false);
+  document.getElementById('guessVal').textContent=`${tr('marker')}: ${state.marker}%`;
+}
+function lockGuess(){
+  const res=scoreFor(state.target,state.marker);
+  state.teams[state.activeTeam].score+=res.pts;
+  fillPoles('reveal');
+  document.getElementById('revealGauge').innerHTML=drawGauge(state.target,state.marker,true);
+  document.getElementById('revealPoints').textContent=(res.pts>0?'+':'')+res.pts;
+  document.getElementById('revealMsg').textContent=
+    `${tr(res.key)}  ·  ${LANG==='ua'?'таємна точка':'secret spot'} ${state.target}% · ${LANG==='ua'?'маркер':'marker'} ${state.marker}%`;
+  renderScoreboard();
+  show('screen-reveal');
+}
+function nextRound(){
+  // check winner
+  if(state.goal>0){
+    const winners=state.teams.filter(t=>t.score>=state.goal);
+    if(winners.length){ return declareWinner(); }
+  }
+  state.activeTeam=(state.activeTeam+1)%state.teams.length;
+  if(state.activeTeam===0) state.round++;
+  prepRound();
+  goHandoff();
+}
+function declareWinner(){
+  const top=[...state.teams].sort((a,b)=>b.score-a.score)[0];
+  document.getElementById('winnerName').textContent=I18N.winnerName[LANG](top.name);
+  document.getElementById('winnerSub').textContent=tr('winnerSub');
+  document.getElementById('finalBoard').innerHTML=boardHTML(true);
+  show('screen-winner');
+}
+
+function boardHTML(sorted){
+  let teams=state.teams.map((t,i)=>({...t,i}));
+  if(sorted) teams.sort((a,b)=>b.score-a.score);
+  return teams.map(t=>`
+    <div class="team ${(!sorted&&t.i===state.activeTeam)?'active':''}">
+      <div class="nm"><span class="dot" style="background:${t.color}"></span>${escapeHtml(t.name)}</div>
+      <div class="sc">${t.score} <small>${tr('pts')}</small></div>
+    </div>`).join('');
+}
+function renderScoreboard(){ document.getElementById('scoreboard').innerHTML=boardHTML(false); }
+function escapeHtml(s){return s.replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));}
+
+function newGame(){ setupTeams=state?state.teams.map(t=>({name:t.name,color:t.color,score:0})):defaultTeams();
+  if(setupTeams.length<2) setupTeams=defaultTeams();
+  renderTeamInputs(); show('screen-setup'); }
+
+function renderDynamic(){
+  renderTeamInputs();
+  if(state){
+    renderScoreboard();
+    // refresh visible play screen labels
+    if(!document.getElementById('screen-clue').classList.contains('hidden')) goClue();
+    if(!document.getElementById('screen-guess').classList.contains('hidden')) {fillPoles('guess');onSlide();
+      document.getElementById('guessSub').textContent=I18N.guessSub[LANG](state.teams[state.activeTeam].name);}
+    if(!document.getElementById('screen-handoff').classList.contains('hidden')) goHandoff();
+  }
+}
+
+/* init */
+setLang('ua');
+renderTeamInputs();
+</script>
+</body>
+</html>
