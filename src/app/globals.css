@@ -714,6 +714,14 @@ table.lb .rank {
 table.lb tr:nth-child(1) .rank {
   color: var(--gold);
 }
+/* Your own row. Two people called Dmytro are two rows, and this is the half of
+   the answer that does not need reading: one of them is lit up. */
+table.lb tr.mine td {
+  background: rgba(94, 224, 197, 0.09);
+}
+table.lb tr.mine td:first-child {
+  box-shadow: inset 3px 0 0 var(--accent);
+}
 .empty {
   color: var(--muted);
   text-align: center;

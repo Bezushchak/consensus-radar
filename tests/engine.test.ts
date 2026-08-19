@@ -3,8 +3,10 @@ import { test } from "node:test";
 
 import {
   MAX_TEAMS,
+  MIN_TEAM_SIZE,
   averageMarker,
   betIsCorrect,
+  canStartGame,
   cleanClue,
   cleanName,
   cleanUid,
@@ -16,9 +18,12 @@ import {
   normalizeCode,
   pickClueGiver,
   pickScale,
+  playableTeams,
   randomTarget,
   scoreFor,
+  teamSize,
   teamsAtGoal,
+  underStaffedTeams,
 } from "../src/lib/game/engine";
 import { cacheBust } from "../src/lib/client/api";
 import { findSeat } from "../src/lib/server/rooms";
@@ -27,6 +32,7 @@ import { buildRows, foldEvents, type EventRow } from "../src/lib/server/analytic
 import { toMixpanel } from "../src/lib/server/mixpanel";
 import { SCALES, scaleByKey, scalesForCategories } from "../src/lib/scales-data";
 import { foldPlayerRows, type StatRow } from "../src/lib/server/leaderboard";
+import { playerTag } from "../src/lib/player-tag";
 import type { Player, Team } from "../src/lib/types";
 
 const player = (over: Partial<Player> & { id: string }): Player => ({
@@ -118,6 +124,65 @@ test("turn order skips teams with no players", () => {
   assert.equal(nextTeamIndex(teams, [], 0), null, "nobody left to play");
 });
 
+test("a team of one cannot play, because the clue-giver does not guess", () => {
+  const teams: Team[] = [
+    { id: "t1", name: "One", color: "#1", score: 0 },
+    { id: "t2", name: "Two", color: "#2", score: 0 },
+  ];
+  const seats = (team: string, n: number) =>
+    Array.from({ length: n }, (_, i) => player({ id: `${team}-${i}`, team_id: team }));
+
+  const full = [...seats("t1", 2), ...seats("t2", 2)];
+  const lopsided = [...seats("t1", 3), ...seats("t2", 1)];
+  const oneTeam = seats("t1", 4);
+
+  assert.equal(canStartGame(teams, full), true, "two proper teams can start");
+  assert.equal(
+    canStartGame(teams, lopsided),
+    false,
+    "a solo player would sit through a round nobody can answer"
+  );
+  assert.equal(canStartGame(teams, oneTeam), false, "one team has nobody to play against");
+  assert.equal(canStartGame(teams, []), false);
+
+  assert.deepEqual(underStaffedTeams(teams, lopsided).map((t) => t.id), ["t2"]);
+  assert.deepEqual(underStaffedTeams(teams, full), [], "nothing to complain about");
+  assert.deepEqual(
+    underStaffedTeams(teams, oneTeam).map((t) => t.id),
+    [],
+    "an empty team is not under-staffed, it is just empty"
+  );
+  assert.deepEqual(playableTeams(teams, lopsided).map((t) => t.id), ["t1"]);
+  assert.equal(teamSize(lopsided, "t1"), 3);
+  assert.equal(teamSize(lopsided, "nope"), 0);
+});
+
+test("turn rotation can be told to skip teams too small to play", () => {
+  const teams: Team[] = [
+    { id: "t1", name: "One", color: "#1", score: 0 },
+    { id: "t2", name: "Two", color: "#2", score: 0 },
+    { id: "t3", name: "Three", color: "#3", score: 0 },
+  ];
+  // t2 lost a player mid-game and is down to one — it must not get the turn.
+  const players = [
+    player({ id: "a", team_id: "t1" }),
+    player({ id: "b", team_id: "t1" }),
+    player({ id: "c", team_id: "t2" }),
+    player({ id: "d", team_id: "t3" }),
+    player({ id: "e", team_id: "t3" }),
+  ];
+
+  assert.equal(nextTeamIndex(teams, players, 0, MIN_TEAM_SIZE), 2, "skip the shrunken t2");
+  assert.equal(nextTeamIndex(teams, players, 0), 1, "the default still means 'anyone at all'");
+  assert.equal(firstTeamIndexWithPlayers(teams, players, MIN_TEAM_SIZE), 0);
+
+  // Everyone but the solo player has gone: nothing is playable, and nextRound
+  // is expected to fall back to minSize 1 rather than dead-end the room.
+  const stragglers = [player({ id: "c", team_id: "t2" })];
+  assert.equal(nextTeamIndex(teams, stragglers, 0, MIN_TEAM_SIZE), null);
+  assert.equal(nextTeamIndex(teams, stragglers, 0, 1), 1);
+});
+
 test("goal detection only fires when a goal is set", () => {
   const teams: Team[] = [
     { id: "t1", name: "One", color: "#1", score: 21 },
@@ -206,6 +271,7 @@ test("every scale has both languages and a unique key", () => {
 
 const DEV_A = "aaaa1111aaaa1111aaaa1111aaaa1111";
 const DEV_B = "bbbb2222bbbb2222bbbb2222bbbb2222";
+const DEV_C = "cccc3333cccc3333cccc3333cccc3333";
 
 const stat = (over: Partial<StatRow> & { player_name: string }): StatRow => ({
   player_uid: null,
@@ -249,6 +315,62 @@ test("a shared name on two devices stays two players", () => {
   const board = foldPlayerRows(rows, 10);
   assert.equal(board.length, 2, "telling namesakes apart is what accounts are for");
   assert.deepEqual(board.map((r) => r.total_points), [5, 1]);
+});
+
+test("namesakes are labelled so a human can tell which row is which", () => {
+  const shared: StatRow[] = [
+    stat({ player_name: "Dmytro", player_uid: DEV_A, points: 5 }),
+    stat({ player_name: "dmytro", player_uid: DEV_B, points: 1 }),
+    stat({ player_name: "Kate", player_uid: DEV_C, points: 3 }),
+  ];
+  const board = foldPlayerRows(shared, 10);
+  const byName = (name: string) => board.filter((r) => r.player_name.toLowerCase() === name);
+
+  const dmytros = byName("dmytro");
+  assert.equal(dmytros.length, 2);
+  assert.ok(
+    dmytros.every((r) => r.ambiguous),
+    "a name two devices answer to must be marked ambiguous"
+  );
+  assert.notEqual(dmytros[0].player_tag, dmytros[1].player_tag, "and they need different tags");
+
+  const kate = byName("kate")[0];
+  assert.equal(kate.ambiguous, false, "the only Kate needs no disambiguation");
+  assert.equal(kate.player_tag, playerTag(DEV_C), "the tag is still there for 'this is you'");
+
+  // Case and whitespace are not a second person.
+  const spaced = foldPlayerRows(
+    [
+      stat({ player_name: " Ann ", player_uid: DEV_A, points: 5 }),
+      stat({ player_name: "ANN", player_uid: DEV_A, points: 1 }),
+    ],
+    10
+  );
+  assert.equal(spaced.length, 1);
+  assert.equal(spaced[0].ambiguous, false);
+
+  // A legacy row that never had a device id has no tag to show.
+  const legacy = foldPlayerRows([stat({ player_name: "Ghost", player_uid: null, points: 2 })], 10);
+  assert.equal(legacy[0].player_tag, null);
+});
+
+test("the device tag is stable, opaque, and readable out loud", () => {
+  const uid = "a".repeat(32);
+  assert.equal(playerTag(uid), playerTag(uid), "the same device always gets the same tag");
+  assert.match(playerTag(uid)!, /^[ABCDEFGHJKMNPQRSTUVWXYZ23456789]{4}$/);
+  assert.equal(playerTag(uid.toUpperCase()), playerTag(uid), "case is not a different device");
+  assert.equal(playerTag(null), null);
+  assert.equal(playerTag(""), null);
+
+  // It must not be a slice of the id — that would publish the id itself.
+  assert.ok(!uid.toUpperCase().startsWith(playerTag(uid)!), "the tag is a hash, not a prefix");
+
+  // Distinct enough for a room full of namesakes.
+  const tags = new Set<string>();
+  for (let i = 0; i < 500; i++) {
+    tags.add(playerTag(i.toString(16).padStart(32, "0"))!);
+  }
+  assert.ok(tags.size > 480, `500 devices produced only ${tags.size} distinct tags`);
 });
 
 test("roles are counted separately and the board is ranked by clue quality", () => {

@@ -49,7 +49,10 @@ export const STRINGS: Dict = {
   playersIn: { ua: "Гравці в кімнаті", en: "Players in the room" },
   hostBadge: { ua: "хост", en: "host" },
   startBtn: { ua: "Почати гру", en: "Start game" },
-  needTwoTeams: { ua: "Потрібно щонайменше по одному гравцю у двох командах.", en: "At least two teams need one player each." },
+  needTwoTeams: {
+    ua: "Потрібно щонайменше дві команди по два гравці. Той, хто дає підказку, не ставить маркер, тому команді з однією людиною нікому відгадувати.",
+    en: "You need at least two teams with two players each. The clue-giver does not place a marker, so a team of one has nobody to guess.",
+  },
   waitingHost: { ua: "Чекаємо, поки хост почне гру…", en: "Waiting for the host to start the game…" },
   settingsTitle: { ua: "Налаштування", en: "Settings" },
   saveSettings: { ua: "Зберегти налаштування", en: "Save settings" },
@@ -90,8 +93,8 @@ export const STRINGS: Dict = {
     en: "Nobody on this team can guess — it needs at least one more player. You can reveal and move on.",
   },
   soloTeamWarn: {
-    ua: "Команди з одним гравцем не зможуть відгадувати: той, хто дає clue, не ставить маркер.",
-    en: "Teams with a single player can't guess: the clue-giver doesn't place a marker.",
+    ua: "У цих командах лише один гравець — доберіть їм пару або переведіть цих людей в іншу команду, інакше гру не почати:",
+    en: "These teams have only one player — give them a partner or move those people to another team, otherwise the game cannot start:",
   },
   waitingOthers: { ua: "Чекаємо на інших…", en: "Waiting for the others…" },
 
@@ -146,7 +149,12 @@ export const STRINGS: Dict = {
   colBets: { ua: "Ставок вгадано", en: "Bets won" },
   colTimes: { ua: "Разів у грі", en: "Times played" },
   colBullseyes: { ua: "Яблучок", en: "Bullseyes" },
+  lbYou: { ua: "це ви", en: "you" },
   lbHint: { ua: "Без реєстрації гравець — це його пристрій: усі ігри з цього браузера зводяться в один рядок. Інший браузер або телефон буде окремим гравцем.", en: "With no sign-in, a player is their device: every game from this browser counts as one row. Another browser or phone shows up as a separate player." },
+  lbTagHint: {
+    ua: "Два різних гравці з однаковим ім'ям — це два різних рядки; щоб їх було видно, до імені додається короткий код пристрою (напр. «Dmytro · K7QM»). Ваш рядок підсвічено.",
+    en: "Two different people with the same name are two different rows; to tell them apart each gets a short device code next to the name (e.g. \"Dmytro · K7QM\"). Your own row is highlighted.",
+  },
 };
 
 export function t(lang: Lang, key: string, vars?: Record<string, string | number>): string {

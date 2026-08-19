@@ -5,6 +5,8 @@ import { useCallback, useEffect, useState } from "react";
 import AppHeader from "@/components/AppHeader";
 import { useLang } from "@/components/LangProvider";
 import { fetchLeaderboard } from "@/lib/client/api";
+import { deviceUid } from "@/lib/client/identity";
+import { playerTag } from "@/lib/player-tag";
 import { startTracking, trackOnce } from "@/lib/client/track";
 import { storedLabels } from "@/lib/scales";
 
@@ -23,6 +25,15 @@ export default function LeaderboardPage() {
   const [rows, setRows] = useState<Row[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+
+  // This browser's own tag, so it can find itself in the table. Computed here
+  // rather than sent by the server: the server never learns which row belongs
+  // to whoever is looking, and the answer is the same hash either way.
+  // localStorage is not available during the server render, hence the effect.
+  const [myTag, setMyTag] = useState<string | null>(null);
+  useEffect(() => {
+    setMyTag(playerTag(deviceUid()));
+  }, []);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -211,10 +222,21 @@ export default function LeaderboardPage() {
                   </tr>
                 </thead>
                 <tbody>
-                  {rows.map((r, i) => (
-                    <tr key={`${r.player_name}-${i}`}>
+                  {rows.map((r, i) => {
+                    const tag = (r.player_tag as string | null) ?? null;
+                    const mine = tag !== null && tag === myTag;
+                    return (
+                    <tr key={`${r.player_name}-${tag ?? i}`} className={mine ? "mine" : ""}>
                       <td className="rank">{i + 1}</td>
-                      <td>{s(r.player_name)}</td>
+                      <td>
+                        {s(r.player_name)}
+                        {/* The tag earns its space only when the name is shared,
+                            or when it is how you spot yourself. */}
+                        {tag && (r.ambiguous || mine) ? (
+                          <span className="mini"> · {tag}</span>
+                        ) : null}
+                        {mine ? <span className="mini"> · {t("lbYou")}</span> : null}
+                      </td>
                       <td className="num">{n(r.clue_avg_points)}</td>
                       <td className="num">{n(r.clues_given)}</td>
                       <td className="num">{n(r.guess_avg_distance)}</td>
@@ -222,7 +244,8 @@ export default function LeaderboardPage() {
                       <td className="num">{n(r.bets_won)}</td>
                       <td className="num">{n(r.total_points)}</td>
                     </tr>
-                  ))}
+                    );
+                  })}
                 </tbody>
               </table>
             ) : null}
@@ -259,7 +282,12 @@ export default function LeaderboardPage() {
           </div>
         )}
 
-        {board === "players" ? <p className="stepnote">{t("lbHint")}</p> : null}
+        {board === "players" ? (
+          <>
+            <p className="stepnote">{t("lbHint")}</p>
+            <p className="stepnote">{t("lbTagHint")}</p>
+          </>
+        ) : null}
       </section>
 
       <div className="footer">

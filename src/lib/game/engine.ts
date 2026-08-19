@@ -12,6 +12,50 @@ export const PALETTE = ["#5ee0c5", "#ff7a9c", "#7aa2ff", "#ffcf5c", "#5ee08a", "
 export const MIN_TEAMS = 2;
 export const MAX_TEAMS = 6;
 export const MAX_PLAYERS = 40;
+
+/**
+ * A team needs this many people before it can take a turn.
+ *
+ * Two, not one, and the reason is structural rather than a matter of taste:
+ * the clue-giver does not place a marker. A team of one therefore has a clue
+ * and nobody to answer it, so the round has no guessers, cannot auto-reveal,
+ * and the only way out is the host pressing "reveal" on an empty round. That
+ * is the dead end the lobby now refuses to walk into.
+ */
+export const MIN_TEAM_SIZE = 2;
+
+/** How many people are sitting in a given team. */
+export function teamSize(players: Player[], teamId: string): number {
+  return players.filter((p) => p.team_id === teamId).length;
+}
+
+/** Teams with enough people to play a round. */
+export function playableTeams(teams: Team[], players: Player[], minSize = MIN_TEAM_SIZE): Team[] {
+  return teams.filter((t) => teamSize(players, t.id) >= minSize);
+}
+
+/** Teams that have someone in them but not enough to play — the blockers. */
+export function underStaffedTeams(
+  teams: Team[],
+  players: Player[],
+  minSize = MIN_TEAM_SIZE
+): Team[] {
+  return teams.filter((t) => {
+    const n = teamSize(players, t.id);
+    return n > 0 && n < minSize;
+  });
+}
+
+/**
+ * Can this room start? Two playable teams, and nobody stranded in a team too
+ * small to play — a stranded player would silently never get a turn.
+ */
+export function canStartGame(teams: Team[], players: Player[], minSize = MIN_TEAM_SIZE): boolean {
+  return (
+    playableTeams(teams, players, minSize).length >= MIN_TEAMS &&
+    underStaffedTeams(teams, players, minSize).length === 0
+  );
+}
 export const CLUE_MAX_LEN = 120;
 export const NAME_MAX_LEN = 24;
 
@@ -96,20 +140,34 @@ export function pickClueGiver(teamPlayers: Player[]): Player | null {
 }
 
 /**
- * Next team index that actually has players, starting after `from`.
- * Returns null when no team has anyone.
+ * Next team index that can actually play, starting after `from`.
+ * Returns null when no team qualifies.
+ *
+ * `minSize` defaults to 1 — "has anyone at all" — because that is the weakest
+ * useful meaning and keeps this honest as a general helper. Live play passes
+ * MIN_TEAM_SIZE, so a team that shrinks to one person mid-game is skipped
+ * instead of wedging the rotation on a round nobody can answer.
  */
-export function nextTeamIndex(teams: Team[], players: Player[], from: number): number | null {
+export function nextTeamIndex(
+  teams: Team[],
+  players: Player[],
+  from: number,
+  minSize = 1
+): number | null {
   for (let step = 1; step <= teams.length; step++) {
     const idx = (from + step) % teams.length;
-    if (players.some((p) => p.team_id === teams[idx].id)) return idx;
+    if (teamSize(players, teams[idx].id) >= minSize) return idx;
   }
   return null;
 }
 
-export function firstTeamIndexWithPlayers(teams: Team[], players: Player[]): number | null {
+export function firstTeamIndexWithPlayers(
+  teams: Team[],
+  players: Player[],
+  minSize = 1
+): number | null {
   for (let i = 0; i < teams.length; i++) {
-    if (players.some((p) => p.team_id === teams[i].id)) return i;
+    if (teamSize(players, teams[i].id) >= minSize) return i;
   }
   return null;
 }

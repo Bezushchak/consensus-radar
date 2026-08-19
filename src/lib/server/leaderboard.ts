@@ -11,6 +11,7 @@
  */
 
 import { admin } from "../supabase/admin";
+import { playerTag } from "../player-tag";
 import { ApiError } from "./rooms";
 
 export type Board = "teams" | "rounds" | "players" | "scales";
@@ -52,6 +53,13 @@ export interface RoundRow {
 
 export interface PlayerRow {
   player_name: string;
+  /**
+   * Four characters derived from the device id, or null for a legacy row that
+   * never had one. The browser hashes its own device id to recognise its row;
+   * `ambiguous` says whether the tag needs to be shown at all.
+   */
+  player_tag: string | null;
+  ambiguous: boolean;
   clues_given: number;
   clue_avg_points: number | null;
   clue_avg_distance: number | null;
@@ -157,7 +165,10 @@ export interface StatRow {
  *
  * What this deliberately does not do is merge two different people who share a
  * name across devices. Telling those apart needs a real account, and the whole
- * point of this game is that nobody has to make one.
+ * point of this game is that nobody has to make one. They are already separate
+ * rows — the fix is that each row also carries a short tag from its device id,
+ * shown when a name is claimed by more than one of them, so "Dmytro · K7QM"
+ * and "Dmytro · R3BX" can be told apart on sight.
  */
 export async function playersBoard(period: Period, limit: number): Promise<PlayerRow[]> {
   let q = admin()
@@ -193,6 +204,7 @@ export function foldPlayerRows(rows: StatRow[], limit: number): PlayerRow[] {
 
   interface Acc {
     name: string;
+    uid: string | null;
     clueDist: number[];
     cluePts: number[];
     guessDist: number[];
@@ -202,10 +214,19 @@ export function foldPlayerRows(rows: StatRow[], limit: number): PlayerRow[] {
   const acc = new Map<string, Acc>();
 
   for (const row of rows) {
-    const key = row.player_uid ?? uidByName.get(nameOf(row)) ?? nameOf(row);
+    const uid = row.player_uid ?? uidByName.get(nameOf(row)) ?? null;
+    const key = uid ?? nameOf(row);
     let a = acc.get(key);
     if (!a) {
-      a = { name: row.player_name, clueDist: [], cluePts: [], guessDist: [], betsWon: 0, total: 0 };
+      a = {
+        name: row.player_name,
+        uid,
+        clueDist: [],
+        cluePts: [],
+        guessDist: [],
+        betsWon: 0,
+        total: 0,
+      };
       acc.set(key, a);
     }
     const pts = row.points ?? 0;
@@ -223,9 +244,20 @@ export function foldPlayerRows(rows: StatRow[], limit: number): PlayerRow[] {
 
   const avg = (xs: number[]) => (xs.length ? xs.reduce((s, x) => s + x, 0) / xs.length : null);
 
-  return [...acc.values()]
+  // Which names belong to more than one group. Those, and only those, need a
+  // tag next to them — one Kate on the board reads better without one.
+  const groups = [...acc.values()];
+  const perName = new Map<string, number>();
+  for (const a of groups) {
+    const n = a.name.trim().toLowerCase();
+    perName.set(n, (perName.get(n) ?? 0) + 1);
+  }
+
+  return groups
     .map((a) => ({
       player_name: a.name,
+      player_tag: playerTag(a.uid),
+      ambiguous: (perName.get(a.name.trim().toLowerCase()) ?? 1) > 1,
       clues_given: a.cluePts.length,
       clue_avg_points: a.cluePts.length ? r2(avg(a.cluePts)!) : null,
       clue_avg_distance: a.clueDist.length ? r1(avg(a.clueDist)!) : null,

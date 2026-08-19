@@ -2,6 +2,7 @@
 
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
 import { loadLang, saveLang } from "@/lib/client/identity";
+import { track } from "@/lib/client/track";
 import { t as translate } from "@/lib/i18n";
 import type { Lang } from "@/lib/types";
 
@@ -30,6 +31,12 @@ export function LangProvider({ children }: { children: React.ReactNode }) {
     setLangState(next);
     saveLang(next);
     document.documentElement.lang = next;
+    // `lang_switched` has been on the ingest allowlist since analytics went in
+    // but nothing ever sent it. A documented event that never fires is worse
+    // than no event: a flat line reads as "nobody switches" rather than
+    // "nobody measured". `to` is the language chosen, which is the only part
+    // worth knowing — the language left behind is whatever the default was.
+    track("lang_switched", { to: next });
   }, []);
 
   const value = useMemo<LangContextValue>(

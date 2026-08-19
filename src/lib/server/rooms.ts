@@ -7,6 +7,8 @@ import { admin } from "../supabase/admin";
 import {
   BET_POINTS,
   MAX_PLAYERS,
+  MIN_TEAMS,
+  MIN_TEAM_SIZE,
   averageMarker,
   betIsCorrect,
   cleanClue,
@@ -20,10 +22,12 @@ import {
   nextTeamIndex,
   pickClueGiver,
   pickScale,
+  playableTeams,
   randomTarget,
   randomToken,
   scoreFor,
   teamsAtGoal,
+  underStaffedTeams,
 } from "../game/engine";
 import { scalePool } from "./scales";
 import type {
@@ -440,13 +444,27 @@ export async function startGame(code: string, playerId: string, token: string) {
   if (room.status === "playing") return getState(code);
   if (room.status === "finished") throw new ApiError(409, "Game already finished");
 
+  // The lobby disables the Start button under the same rule, so reaching this
+  // means a stale client or a direct API call. Both get a specific message
+  // rather than a generic 400, because the fix is different in each case.
   const players = await getPlayers(room.id);
-  const staffed = room.teams.filter((t) => players.some((p) => p.team_id === t.id));
-  if (staffed.length < 2) {
-    throw new ApiError(400, "At least two teams need a player before the game can start");
+  const playable = playableTeams(room.teams, players, MIN_TEAM_SIZE);
+  const short = underStaffedTeams(room.teams, players, MIN_TEAM_SIZE);
+  if (short.length > 0) {
+    throw new ApiError(
+      400,
+      `Every team needs at least ${MIN_TEAM_SIZE} players — the clue-giver does not guess. ` +
+        `Too small: ${short.map((t) => t.name).join(", ")}`
+    );
+  }
+  if (playable.length < MIN_TEAMS) {
+    throw new ApiError(
+      400,
+      `At least ${MIN_TEAMS} teams need ${MIN_TEAM_SIZE} players each before the game can start`
+    );
   }
 
-  const first = firstTeamIndexWithPlayers(room.teams, players) ?? 0;
+  const first = firstTeamIndexWithPlayers(room.teams, players, MIN_TEAM_SIZE) ?? 0;
   await admin()
     .from("rooms")
     .update({
@@ -843,8 +861,15 @@ export async function nextRound(code: string, playerId: string, token: string) {
   const mayAdvance = player.is_host || player.id === round.clue_giver_id;
   if (!mayAdvance) throw new ApiError(403, "Only the host or the clue-giver can start the next round");
 
+  // Prefer a team that can actually play a round. People leave mid-game, and a
+  // team down to one person has a clue-giver and no guessers — handing it the
+  // turn would stall the room until the host force-revealed an empty round.
+  // Falling back to any non-empty team is deliberate: a stalled round the host
+  // can reveal is still better than a room that cannot advance at all.
   const players = await getPlayers(room.id);
-  const next = nextTeamIndex(room.teams, players, room.active_team_index);
+  const next =
+    nextTeamIndex(room.teams, players, room.active_team_index, MIN_TEAM_SIZE) ??
+    nextTeamIndex(room.teams, players, room.active_team_index, 1);
   if (next === null) throw new ApiError(409, "No team has any players left");
 
   const { error } = await admin()
