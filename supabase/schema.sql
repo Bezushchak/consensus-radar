@@ -274,7 +274,25 @@ create index if not exists prs_uid_idx on public.player_round_stats (player_uid)
 
 -- ---------------------------------------------------------------------
 -- LEADERBOARD VIEWS
+--
+-- These are dropped before they are created, and the reason is worth
+-- knowing: `create or replace view` may only APPEND columns. It cannot
+-- reorder them or rename one, so on a project that already has an older
+-- version of a view, inserting a column in the middle fails with
+--   42P16: cannot change name of view column "target" to "scale_left_ua"
+-- and — because the editor runs this file as one transaction — takes the
+-- entire script down with it. Dropping first sidesteps the whole class of
+-- problem. Views hold no data, so there is nothing to lose by rebuilding
+-- them; `cascade` is safe here because nothing in this schema depends on a
+-- view. Every one of them is recreated below, in this same transaction.
 -- ---------------------------------------------------------------------
+drop view if exists public.v_best_rounds   cascade;
+drop view if exists public.v_player_stats  cascade;
+drop view if exists public.v_scale_stats   cascade;
+drop view if exists public.v_funnel        cascade;
+drop view if exists public.v_dropoff       cascade;
+drop view if exists public.v_clicks        cascade;
+drop view if exists public.v_room_dropoff  cascade;
 
 -- 1. Best single rounds (hall of fame for near-bullseyes)
 create or replace view public.v_best_rounds as

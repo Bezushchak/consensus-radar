@@ -30,7 +30,7 @@ npm install
 npm run verify
 ```
 
-`verify` runs the type checker, the 30 unit tests, and a production build. All three must pass. This is the same gate Vercel will run, so if it passes here it will pass there.
+`verify` runs the type checker, the 33 unit tests, and a production build. All three must pass. This is the same gate Vercel will run, so if it passes here it will pass there.
 
 ---
 
@@ -375,7 +375,9 @@ Joining fails, or a join succeeds and then bounces straight back to the join scr
 
 The seed fails with `ERROR: 42P01: relation "public.scales" does not exist` — `schema.sql` never completed, so there is no `scales` table for the seed to fill. Nothing in this error is about the seed. The SQL editor runs each script in one transaction, so a failure anywhere in `schema.sql` leaves the database with none of it, not part of it.
 
-Fix it in this order. Open a **New query**, paste `supabase/schema.sql` on its own, run it, and read the summary table it prints at the end: `tables_ok` and `views_ok` must be `true`. Only then run `supabase/scales-seed.sql` in a second query. If `schema.sql` itself errors, the message names the statement that broke — that is the thing to fix, and it is worth pasting somewhere you can read it in full rather than working from the truncated line the editor shows. Two harmless-looking causes worth ruling out first: pasting only part of the file (it is ~530 lines, so check the last line you pasted is the closing summary `select`), and running it against the wrong project when you have more than one open.
+Fix it in this order. Open a **New query**, paste `supabase/schema.sql` on its own, run it, and read the summary table it prints at the end: `tables_ok` and `views_ok` must be `true`. Only then run `supabase/scales-seed.sql` in a second query. If `schema.sql` itself errors, the message names the statement that broke — that is the thing to fix, and it is worth pasting somewhere you can read it in full rather than working from the truncated line the editor shows. Two harmless-looking causes worth ruling out first: pasting only part of the file (it is ~600 lines, so check the last line you pasted is the closing summary `select`), and running it against the wrong project when you have more than one open.
+
+`schema.sql` fails with `ERROR: 42P16: cannot change name of view column "target" to "scale_left_ua"` — fixed in the same release; if you still see it, you are running an older copy of `supabase/schema.sql`, so `git pull` and paste it again. The cause is a Postgres rule worth knowing: `create or replace view` may only *append* columns. It cannot rename one or slot a new one into the middle. A project created before the Ukrainian scale columns existed has a `v_best_rounds` whose ninth column is `target`, while the current definition puts `scale_left_ua` there — so the replace is rejected, and because the editor runs the file as one transaction, that single line takes all 600 down with it. `schema.sql` now drops all seven views immediately before recreating them, which sidesteps the entire class of problem. Views hold no data, so nothing is lost by rebuilding them.
 
 Players don't see each other update — the Realtime websocket is blocked or the publication didn't get created. The app degrades to polling every 2.5 seconds in this case, so the game stays playable but feels sluggish. To confirm the publication exists, run this in the SQL editor:
 
