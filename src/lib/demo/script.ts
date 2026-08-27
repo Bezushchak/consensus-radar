@@ -1,5 +1,8 @@
-import { PALETTE } from "@/lib/game/engine";
-import type { Lang } from "@/lib/i18n";
+// Relative, not `@/`, like every other file under `src/lib`: the test runner
+// imports these modules straight through `tsx`, which does not read the
+// bundler's path aliases.
+import { PALETTE } from "../game/engine";
+import type { Lang } from "../i18n";
 
 /**
  * The scripted game shown on /how-to-play.

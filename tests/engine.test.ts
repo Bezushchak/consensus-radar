@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { test } from "node:test";
 
 import {
@@ -43,6 +45,14 @@ import { toMixpanel } from "../src/lib/server/mixpanel";
 import { SCALES, scaleByKey, scalesForCategories } from "../src/lib/scales-data";
 import { foldPlayerRows, type StatRow } from "../src/lib/server/leaderboard";
 import { playerTag } from "../src/lib/player-tag";
+import {
+  DEMO,
+  DEMO_PLAYERS,
+  DEMO_TEAMS,
+  buildScript,
+  initialState,
+  pick,
+} from "../src/lib/demo/script";
 import type { Player, Team } from "../src/lib/types";
 
 const player = (over: Partial<Player> & { id: string }): Player => ({
@@ -856,6 +866,214 @@ test("every clue rejection can actually be shown to the player", () => {
     for (const lang of ["ua", "en"] as const) {
       const out = translate(lang, key, { count: 3, max: MAX_CLUE_WORDS });
       assert.ok(!/\{\w+\}/.test(out), `${key} in ${lang} left a placeholder unfilled: ${out}`);
+    }
+  }
+});
+
+// --------------------------------------------------------------------------
+// The scripted demo on /how-to-play.
+//
+// The player itself is a DOM animation and out of reach here, but the thing it
+// performs is a plain list of steps and a table of numbers, and those are the
+// part that can lie. A demo that teaches a rule the app no longer has is worse
+// than no demo, because it is believed.
+// --------------------------------------------------------------------------
+
+test("the demo's arithmetic is the arithmetic the engine would do", () => {
+  // Two guesses at 27 and 34 average to 30.5, and 30.5 against a secret at 36
+  // is 5.5 off, which the bands score as 3. All three numbers are written down
+  // in the script so the reveal can render before the round is "played"; this
+  // is what stops them drifting away from the functions that produce them.
+  assert.equal(averageMarker(DEMO.guesses.map((g) => g.value)), DEMO.marker);
+  assert.equal(scoreFor(DEMO.target, DEMO.marker).pts, DEMO.points);
+
+  // And the tick or cross beside each bettor's name at the reveal.
+  for (const b of DEMO.bets) {
+    assert.equal(
+      b.correct,
+      betIsCorrect(DEMO.target, DEMO.marker, b.side),
+      `${b.name} bet ${b.side}, and the demo shows that as ${b.correct ? "right" : "wrong"}`
+    );
+  }
+
+  // The room code is one the real join box would accept unchanged, and avoids
+  // the characters the generator leaves out because they are read wrong aloud.
+  assert.equal(DEMO.code, normalizeCode(DEMO.code));
+  assert.equal(DEMO.code.length, 4);
+  for (const ch of DEMO.code) {
+    assert.ok(!"ILO01".includes(ch), `the demo code contains ${ch}, which no real code uses`);
+  }
+});
+
+test("the clue the demo refuses is one the app really refuses", () => {
+  // The rejection shown on screen is `validateClue` running on the typed text,
+  // not a caption asserting a rule. Both languages, because the script types a
+  // different sentence in each.
+  for (const lang of ["ua", "en"] as const) {
+    const bad = validateClue(pick(DEMO.clueBad, lang));
+    assert.equal(bad.ok, false, `${lang}: the first clue is meant to be rejected`);
+    assert.equal(bad.ok ? null : bad.reason, "digits", `${lang}: rejected for the wrong reason`);
+
+    const good = validateClue(pick(DEMO.clue, lang));
+    assert.equal(
+      good.ok,
+      true,
+      `${lang}: the replacement clue is meant to pass, and did not: ${
+        good.ok ? "" : good.reason
+      }`
+    );
+    assert.ok(good.words <= MAX_CLUE_WORDS);
+  }
+});
+
+test("the demo's cast is a room the real engine would let start", () => {
+  const teams: Team[] = DEMO_TEAMS.map((tm) => ({
+    id: tm.id,
+    name: pick(tm.name, "en"),
+    color: tm.color,
+    score: 0,
+  }));
+  const players = DEMO_PLAYERS.map((p) =>
+    player({ id: p.id, name: p.name, team_id: p.team, is_host: p.host === true })
+  );
+
+  assert.ok(
+    canStartGame(teams, players),
+    "the demo shows a Start button on a room the real check would block"
+  );
+  assert.equal(playableTeams(teams, players).length, DEMO_TEAMS.length);
+  assert.equal(underStaffedTeams(teams, players).length, 0);
+  assert.equal(players.filter((p) => p.is_host).length, 1, "exactly one host");
+
+  // Who guesses and who bets is not decoration: the clue-giver's team guesses
+  // and the other team bets, and nobody does both. The count under the gauge
+  // is `DEMO.guesses.length`, so a name in the wrong list would show a total
+  // that never fills.
+  const giving = DEMO_TEAMS[0].id;
+  for (const g of DEMO.guesses) {
+    const p = DEMO_PLAYERS.find((x) => x.id === g.id);
+    assert.ok(p, `${g.id} guesses but is not in the cast`);
+    assert.equal(p?.team, giving, `${g.name} guesses for a team they are not on`);
+    assert.ok(p?.host !== true, `${g.name} gives the clue and also guesses`);
+  }
+  for (const b of DEMO.bets) {
+    const p = DEMO_PLAYERS.find((x) => x.id === b.id);
+    assert.ok(p, `${b.id} bets but is not in the cast`);
+    assert.notEqual(p?.team, giving, `${b.name} bets on their own team's marker`);
+  }
+});
+
+test("every word the demo narrates exists in both languages", () => {
+  // Walked the way the player walks it, because a caption set by a `screen` or
+  // `set` patch keeps whatever placeholders the previous `say` supplied. That
+  // is precisely the bug this guards: a key with a `{marker}` in it, reached by
+  // a step that carries no marker, flashes the raw braces at the reader.
+  for (const lang of ["ua", "en"] as const) {
+    const start = initialState();
+    let caption = start.caption;
+    let role = start.role;
+    let vars: Record<string, string | number> | undefined;
+
+    const check = (key: string) => {
+      assert.ok(STRINGS[key], `the demo says "${key}", which is not in the dictionary`);
+      const out = translate(lang, key, vars);
+      assert.ok(out.length > 0, `${key} is empty in ${lang}`);
+      assert.ok(!/\{\w+\}/.test(out), `${key} in ${lang} left a placeholder unfilled: ${out}`);
+    };
+
+    check(caption);
+    check(role);
+
+    for (const step of buildScript(lang)) {
+      if (step.do === "say") {
+        caption = step.key;
+        vars = step.vars;
+      } else if (step.do === "screen" || step.do === "set" || step.do === "click") {
+        if (step.patch?.caption) caption = step.patch.caption;
+        if (step.patch?.role) role = step.patch.role;
+      } else {
+        continue;
+      }
+      check(caption);
+      check(role);
+    }
+  }
+
+  // The chrome around the stage, and the prose underneath it. Not reachable by
+  // walking the script, and new in the same change, so listed by hand.
+  const around = [
+    "howToTitle",
+    "howToSub",
+    "howToRulesTitle",
+    "howToSetupRules",
+    "howToGoal",
+    "howToClueRules",
+    "howToBetsRules",
+    "demoPlay",
+    "demoPause",
+    "demoRestart",
+    "demoNotReal",
+    "demoHostNote",
+  ];
+  for (const key of around) {
+    assert.ok(STRINGS[key], `${key} is on the how-to page but not in the dictionary`);
+    for (const lang of ["ua", "en"] as const) {
+      const out = translate(lang, key, { max: MAX_CLUE_WORDS });
+      assert.ok(out.length > 0, `${key} is empty in ${lang}`);
+      assert.ok(!/\{\w+\}/.test(out), `${key} in ${lang} left a placeholder unfilled: ${out}`);
+    }
+  }
+});
+
+test("the demo cursor is only ever sent to an element that exists", () => {
+  // The one failure that looks like nothing: rename a button in `DemoScreens`
+  // and the script keeps naming the old key, `centerOf` returns null, and the
+  // cursor silently stops moving while the screens carry on changing. Read out
+  // of the source rather than rendered, because there is no DOM here.
+  const source = readFileSync(
+    join(process.cwd(), "src/components/demo/DemoScreens.tsx"),
+    "utf8"
+  );
+
+  const registered = new Set<string>();
+  for (const m of source.matchAll(/mark\("([^"]+)"\)/g)) registered.add(m[1]);
+
+  // Two families register from a prop rather than a literal, so they cannot be
+  // read straight out of the source. Each is pinned to the shape it registers
+  // through, so a refactor fails here loudly instead of leaving a stale list.
+  assert.match(
+    source,
+    /`team-\$\{tm\.id\}`/,
+    "the team buttons no longer register as `team-${tm.id}` — update this test"
+  );
+  for (const tm of DEMO_TEAMS) registered.add(`team-${tm.id}`);
+
+  assert.match(
+    source,
+    /ref=\{mark\(id\)\}/,
+    "the text boxes no longer register under their own id — update this test"
+  );
+  for (const m of source.matchAll(/<Field\s+id="([^"]+)"/g)) registered.add(m[1]);
+
+  assert.ok(registered.size > 8, "found almost nothing registered — the regexes have rotted");
+
+  for (const lang of ["ua", "en"] as const) {
+    for (const step of buildScript(lang)) {
+      const target =
+        step.do === "click" || step.do === "move"
+          ? step.to
+          : step.do === "type"
+            ? step.into
+            : step.do === "erase"
+              ? step.into
+              : step.do === "drag"
+                ? "slider"
+                : null;
+      if (target === null) continue;
+      assert.ok(
+        registered.has(target),
+        `the demo aims at "${target}", which no screen registers`
+      );
     }
   }
 });
