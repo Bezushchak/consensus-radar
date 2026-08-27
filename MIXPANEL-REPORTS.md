@@ -70,7 +70,9 @@ otherwise "today" ends at 3am and every daily number is cut in the wrong place.
 two traps in the description field where they will be read (`round_revealed`
 fires once per watching device; `session_end` fires per page-hide), and hide
 `pointer_heat` and `mixpanel_probe`. Tag the funnel events with one tag so the
-event picker can filter to just them.
+event picker can filter to just them, and tag `round_skipped` and `host_claimed`
+with a second one — they are failure signals rather than features, and grouping
+them keeps a reader from reading a rescue as a milestone.
 
 **Two boards.** "Activation" and "Game quality". Reports are saved into boards,
 and deciding this first stops the reports piling up in one list.
@@ -191,9 +193,12 @@ to see whether the long games actually finish.
 Every labelled control is captured by one delegated listener, so this table is
 complete without anyone remembering to instrument a button. Three rows to look at
 specifically: `copy-link` as a share of `room_created` is the share rate — whether
-codes travel by link or get read out loud; `reveal-now` is the host forcing a
-stuck round, which should now be rare; and `(unlabelled)` is people pressing
-things that were never meant to be pressed, which is where the confusion is.
+codes travel by link or get read out loud; `reveal-now` and `skip-round` are the
+two ways a stuck round gets unstuck, so together they are how often rounds stall
+at all; and `(unlabelled)` is people pressing things that were never meant to be
+pressed, which is where the confusion is. `skip-round` and `claim-host` have
+proper events of their own — see report 10, which is the better place to read
+them.
 
 ### 8 — Repeat play
 
@@ -215,9 +220,58 @@ laptop, everyone else is on a phone — so any step where mobile converts
 noticeably worse is a mobile layout bug, and this is the highest-value slice
 available in the whole project.
 
+### 10 — The rescue hatches
+
+Two events exist only because a room can get stuck, and both are read as a ratio
+against the thing that should have happened instead. Formulas make it one chart
+rather than two numbers divided by hand.
+
+- **Type:** Insights, with the formula editor (`Σ`)
+- **Metric A:** `round_skipped`, Total Events. **Metric B:** `round_revealed`,
+  Total Events.
+- **Formula:** `A/B`
+- **Breakdown:** `phase` on `round_skipped`
+- Second chart, same shape: A = `host_claimed` Total Events, B = `room_created`
+  Total Events, `A/B`. Both of those fire exactly once per event, so that ratio
+  is a true rate.
+
+**Mind the units on the first chart.** `round_skipped` fires once per skipped
+round, but `round_revealed` fires once per *watching device*, so `A/B` is not the
+share of rounds that got skipped — it is that share divided by the average number
+of people at the table. Neither metric type fixes this: Unique Sessions on B
+counts tabs that saw at least one reveal, which is players rather than rounds, so
+it swaps one wrong denominator for another. Use it as a **trend line** — the shape
+over weeks is exactly right, and that is the question — and multiply by your
+usual table size if you want a rough absolute. There is no per-round unique
+identifier in the events to do better, and adding one is not worth a column.
+
+**Read it as:** `round_skipped ÷ round_revealed` is how often a scale or a
+clue-giver defeats a table, and the `phase` breakdown says which fix. `phase =
+clue` is a round given up before a clue existed — the clue-giver walked away, or
+looked at the pair and had nothing — so a persistent number points at the scale
+pool, and the pairs to suspect are the ones the Scales board already flags as
+hardest. `phase = guess` is rarer and worse: markers were down and the round was
+still abandoned, meaning the host threw away points rather than reveal them.
+
+`host_claimed ÷ room_created` is how often the person who opened the room walked
+away from it. A small number is noise — a laptop that slept while its owner read
+a scale out loud, and somebody impatient. A large one means hosting is landing on
+whoever clicked first, and the fix is fewer host-only controls rather than a
+faster takeover.
+
+**Trap:** the two matching click labels are `skip-round` and `claim-host`, and
+`skip-round` is on two different buttons — the clue-giver's own give-up and the
+guessers' escape hatch once the clue-giver goes quiet. `click` merges them; only
+`round_skipped.phase` tells them apart. Cross-check a suspicious `host_claimed`
+against `session_end` on the same device: a host who never hid their tab and was
+still dethroned is a heartbeat bug, not a person leaving.
+
 **If you are on the free plan and can only keep five:** the host funnel, the guest
-funnel, the error queue, round quality, and setup time. Configuration and clicks
-can be rebuilt in a minute when a specific question comes up.
+funnel, the error queue, round quality, and setup time. Configuration, clicks and
+the rescue-hatch ratios can be rebuilt in a minute when a specific question comes
+up — and the last of those is on the app's own `/analytics` page permanently, in
+the **Other events** table directly under the funnel, which is the cheapest place
+to keep half an eye on it.
 
 ## Techniques worth knowing about
 

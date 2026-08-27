@@ -52,6 +52,14 @@ const SIDE_EVENTS = [
   "howto_open",
   "lang_switched",
   "bet_placed",
+  // The two rescue hatches. Both are failure signals rather than features, and
+  // that is exactly why they are worth counting: `round_skipped` against
+  // `round_revealed` says how often a scale or a clue-giver defeats a table,
+  // and `host_claimed` against `room_created` says how often the person who
+  // opened the room walked away from it. If either climbs, the fix is upstream
+  // — a better scale pool, a clearer clue screen — not a better button.
+  "round_skipped", // props.round, props.phase
+  "host_claimed",
   "click", // props.target = the data-ev label
   "pointer_heat", // sampled cursor grid, off unless enabled
   "error_shown", // props.message
@@ -182,11 +190,26 @@ export interface ClickRow {
   sessions: number;
 }
 
+/**
+ * One non-funnel event, counted. The funnel table can only show the nine
+ * ordered steps, so without this the side events are recorded, forwarded to
+ * Mixpanel, and invisible in the app's own dashboard — which is where somebody
+ * looks first. `round_skipped` and `host_claimed` in particular are worth
+ * seeing next to the funnel, because they say why the funnel has a hole.
+ */
+export interface SideRow {
+  name: string;
+  sessions: number;
+  events: number;
+}
+
 export interface AnalyticsSummary {
   period: Period;
   sessions: number;
   events: number;
   funnel: FunnelRow[];
+  /** The allowlisted non-funnel events, busiest first. */
+  side: SideRow[];
   /** Sessions that opened the app and never locked a guess, as a percentage. */
   dropoutRate: number | null;
   medianSessionSeconds: number | null;
@@ -305,11 +328,22 @@ export function foldEvents(rows: RawRow[], period: Period): AnalyticsSummary {
   const played = stepSessions.get("guess_locked")?.size ?? 0;
   const dropoutRate = opened > 0 ? round1((100 * Math.max(opened - played, 0)) / opened) : null;
 
+  // `click` and `pointer_heat` are left out: the clicks table below is a better
+  // view of the first, and the second is a payload rather than a count.
+  const side: SideRow[] = SIDE_EVENTS.filter((n) => n !== "click" && n !== "pointer_heat")
+    .map((name) => ({
+      name,
+      sessions: stepSessions.get(name)?.size ?? 0,
+      events: stepEvents.get(name) ?? 0,
+    }))
+    .sort((a, b) => b.events - a.events || a.name.localeCompare(b.name));
+
   return {
     period,
     sessions: sessions.size,
     events: rows.length,
     funnel,
+    side,
     dropoutRate,
     medianSessionSeconds: median(durations),
     clicks: [...clicks.values()].sort((a, b) => b.clicks - a.clicks).slice(0, 25),

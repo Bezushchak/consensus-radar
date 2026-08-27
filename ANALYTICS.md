@@ -50,7 +50,7 @@ Nine funnel events, in the order a player meets them:
 | `round_revealed` | The reveal appears | **every device watching** | `round`, `points`, `distance` (`-1` when unknown) |
 | `game_finished` | The winner screen appears | every device | `rounds`, `score` |
 
-And nine that are useful but never gate a later step:
+And eleven that are useful but never gate a later step:
 
 | Event | Props | Note |
 | --- | --- | --- |
@@ -59,17 +59,25 @@ And nine that are useful but never gate a later step:
 | `howto_open` | — | Opened `/how-to-play`. Once per session. Not a funnel step on purpose: reading the rules is not on the way to playing, so a step nobody has to take would read as a 90% drop-off. |
 | `lang_switched` | `to` | |
 | `bet_placed` | `side`, `round`, `markers` | Only when side bets are enabled for the room. `markers` is how many of the guessing team's markers were on screen when the call was made. |
+| `round_skipped` | `round`, `phase` | Somebody gave up on a round rather than scoring it. Once per skipped round: both rescues are claimed atomically, and the loser of a simultaneous press is handed the same fresh state back rather than an error, so the device checks the state came back *changed* before counting — a plain "the call worked" would report one rescue twice. `phase` says whether the clue had arrived yet — `clue` is a clue-giver who never delivered, `guess` is a table that could not read one. |
+| `host_claimed` | — | Somebody took the crown from a host who had gone quiet for two minutes. Once per takeover, on the device that is holding the crown afterwards and was not holding it before. |
 | `click` | `target`, `tag` | `target` is the control's `data-ev` label; see below. |
 | `error_shown` | `where`, `message` | `where` is `create`, `join-home` or `join-gate`. |
 | `session_end` | `seconds` | Fires on every page-hide, not once per visit. |
 | `pointer_heat` | `grid`, `cells` | Only when `NEXT_PUBLIC_TRACK_POINTER=1`. |
 
+The last two are worth treating differently from the rest of that list. They are
+not features anybody set out to use; they are the two escape hatches from a room
+that has stopped moving, so every one of them is a small report that something
+upstream failed. They are the subject of their own section in Part 2.
+
 Clicks are captured by one delegated listener, so every labelled control is
 already measured without anyone remembering to instrument it. The labels that
 exist, by screen: `resume-room`, `create-room`, `join-by-code` on the front page;
 `pick-team`, `join-room` on the join gate; `copy-link`, `switch-team`,
-`save-settings`, `start-game` in the lobby; `send-clue`, `submit-guess`,
-`change-guess`, `bet-left`, `bet-right`, `reveal-now`, `next-round` in play;
+`save-settings`, `start-game` in the lobby; `claim-host` on any screen once the
+host has gone quiet; `send-clue`, `submit-guess`, `change-guess`, `bet-left`,
+`bet-right`, `reveal-now`, `skip-round`, `next-round` in play;
 `play-again`, `winner-leaderboard` on the winner screen; `lb-board-<teams |
 rounds | players | scales>` and `lb-period-<all | week | month>` on the
 leaderboard; and `demo-play`, `demo-pause`, `demo-restart` on the tutorial,
@@ -224,6 +232,43 @@ rate — whether the room code gets distributed by link or read out loud.
 happens when a round is stuck. It should be rare now that a team cannot be left
 with nobody to guess; if it is not, something else is stalling rounds.
 
+### The rescue hatches: how often the room stops moving
+
+Two events exist only because a room can get stuck, and both are best read as a
+ratio against the thing that was supposed to happen instead. Neither is on the
+`/analytics` funnel, because neither is a step anybody is meant to reach — they
+have their own **Other events** table on that page, directly under the funnel,
+for exactly this comparison.
+
+**`round_skipped` ÷ `round_revealed`** is how often a scale or a clue-giver
+defeats a table — as a trend rather than as a rate. Watch the units: the
+numerator is one per skipped round, the denominator one per *watching device*, so
+the quotient is the real share divided by the average table size. Comparing this
+week's figure to last week's is exactly right; quoting it as "3% of rounds get
+skipped" is not. Break it down by `phase`, because the two halves have different
+fixes. `phase = clue` is a round abandoned before a clue existed: either the
+clue-giver walked away, or they looked at the pair and had nothing — so a
+persistent number here points at the scale pool, and the pairs to suspect are
+the ones the Scales board on `/leaderboard` already flags as hardest. `phase =
+guess` is rarer and worse: markers were down and the round was still given up,
+which means the host chose to throw away points rather than reveal them.
+
+**`host_claimed` ÷ `room_created`** is how often the person who opened the room
+walked away from it. Some of this is healthy — a laptop that went to sleep while
+its owner read a scale out loud, and somebody impatient — so a small number is
+noise. A large one means hosting is being handed to whoever happened to click
+first, and the fix is upstream of the button: fewer host-only controls, not a
+faster takeover. Cross-check against `session_end` on the host's device; a host
+who never hid the tab and was still dethroned is a heartbeat bug, not a person
+leaving.
+
+Both events fire on the acting device only, so their event and session counts
+agree — unlike `round_revealed`, which fires everywhere. The matching click
+labels are `skip-round` and `claim-host`; note that `skip-round` is on two
+different buttons (the clue-giver's own give-up, and the guessers' escape hatch
+once the clue-giver goes quiet), so `click` merges them and only
+`round_skipped.phase` tells them apart.
+
 ### Retention
 
 Mixpanel → Retention, born on `room_created` or `joined`, returning on
@@ -257,7 +302,10 @@ separate events it needs a join Mixpanel will not do.
 as `game_started` minus `game_finished`, which cannot distinguish "gave up
 confused" from "played happily and stopped at a good moment" — a difference worth
 a lot. A `leave` action already exists in the API; emitting an event from it, with
-the round number, would separate the two.
+the round number, would separate the two. `round_skipped` is the nearest thing
+that exists and it is not a substitute: it says a *round* was abandoned by
+somebody who was still in the room and still playing, which is close to the
+opposite signal.
 
 **Team composition changes.** `click` with `target = switch-team` is a usable
 proxy for people shuffling teams in the lobby, but it does not say what they

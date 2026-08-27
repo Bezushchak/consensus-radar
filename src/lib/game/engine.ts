@@ -5,7 +5,14 @@
  */
 
 import type { Scale } from "../scales";
-import type { BetSide, Player, Team } from "../types";
+import type {
+  BetSide,
+  Phase,
+  Player,
+  RevealDetailBet,
+  RevealDetailGuess,
+  Team,
+} from "../types";
 
 export const PALETTE = ["#5ee0c5", "#ff7a9c", "#7aa2ff", "#ffcf5c", "#5ee08a", "#c08bff"];
 
@@ -180,6 +187,253 @@ export function teamsAtGoal(teams: Team[], goal: number): Team[] {
 export function leader(teams: Team[]): Team | null {
   if (teams.length === 0) return null;
   return [...teams].sort((a, b) => b.score - a.score)[0];
+}
+
+// ---------------------------------------------------------------------
+// Presence — who is still at the table
+//
+// A room has no logins and no sockets it can trust, so "still here" is a
+// judgement made from one timestamp: `last_seen_at`, which every request a
+// device makes refreshes. Two things depend on that judgement, and both are
+// about a room that cannot move: a host who closed the tab, and a round whose
+// clue never arrives.
+// ---------------------------------------------------------------------
+
+/**
+ * How long a player can go unheard from before the room treats them as gone.
+ *
+ * Every open tab refetches the room state at least every 15 seconds and that
+ * read is what refreshes the stamp, so two minutes is eight missed beats:
+ * comfortably longer than a phone waking up, a tunnel, or a slow reload, and
+ * short enough that a table is not left waiting on somebody who has gone.
+ */
+export const AWAY_AFTER_MS = 120_000;
+
+/**
+ * Have we heard from this player recently?
+ *
+ * An unreadable or missing stamp counts as present. The stamp is evidence of
+ * being here; its absence is not evidence of being gone, and the cost of the
+ * two mistakes is not symmetric — a false "present" leaves things exactly as
+ * they are today, a false "away" takes the crown off somebody who is holding
+ * their phone.
+ */
+export function seenRecently(player: Player, now: number, awayAfter = AWAY_AFTER_MS): boolean {
+  const stamp = Date.parse(player.last_seen_at || player.joined_at || "");
+  if (!Number.isFinite(stamp)) return true;
+  return now - stamp < awayAfter;
+}
+
+/**
+ * Is the room's host gone? True when nobody holds the crown at all, or when
+ * the holder has stopped answering.
+ *
+ * `hostId` is what the room row says; the `is_host` flag on the players is the
+ * fallback, because the two are written separately and a crash between the two
+ * writes must not leave the room permanently hostless.
+ */
+export function hostIsAway(
+  players: Player[],
+  hostId: string | null,
+  now: number,
+  awayAfter = AWAY_AFTER_MS
+): boolean {
+  if (players.length === 0) return false; // an empty room has nothing to hand over
+  const host = players.find((p) => p.id === hostId) ?? players.find((p) => p.is_host) ?? null;
+  if (!host) return true;
+  return !seenRecently(host, now, awayAfter);
+}
+
+/**
+ * Who takes over: whoever has been in the room longest of the people still
+ * answering. Deliberately not "whoever asked first" — every device computes
+ * this from the same player list and gets the same answer, so the handover
+ * needs no coordination and cannot be raced into two hosts.
+ *
+ * Anyone already flagged `is_host` is excluded, which is what makes this safe
+ * to call when the crown is merely stale: the answer is always somebody new.
+ */
+export function pickNewHost(players: Player[], now: number, awayAfter = AWAY_AFTER_MS): Player | null {
+  const here = players.filter((p) => !p.is_host && seenRecently(p, now, awayAfter));
+  if (here.length === 0) return null;
+  return [...here].sort((a, b) => a.joined_at.localeCompare(b.joined_at))[0];
+}
+
+/**
+ * Has the round's clue-giver stopped answering?
+ *
+ * The one seat a round cannot continue without: the guessers have no button to
+ * press until a clue exists. A null id counts as away, and so does an id with
+ * no matching player — both mean the seat the round is waiting on is empty
+ * (`rounds.clue_giver_id` is set to null when the player row is deleted, and a
+ * mid-flight read can see the deletion before the null).
+ *
+ * Note this is only meaningful for players whose device keeps saying hello: the
+ * stamp moves on authenticated requests, so the clue-giver — like the host —
+ * needs the client heartbeat for a quiet screen to still read as present.
+ */
+export function clueGiverIsAway(
+  players: Player[],
+  clueGiverId: string | null,
+  now: number,
+  awayAfter = AWAY_AFTER_MS
+): boolean {
+  if (!clueGiverId) return true;
+  const giver = players.find((p) => p.id === clueGiverId);
+  if (!giver) return true;
+  return !seenRecently(giver, now, awayAfter);
+}
+
+/**
+ * Can this round be abandoned?
+ *
+ * Yes right up to the reveal, and the two phases before it need it for
+ * different reasons. `clue` is the dead end: the guessers cannot act until a
+ * clue exists, so a clue-giver who walks away mid-round leaves a screen with
+ * no button on it — reveal refuses to score a round with no clue, so without
+ * this the only way out is ending the game. `guess` has the reveal button
+ * already, and skipping is still the kinder option there: a clue nobody can
+ * read is worth zero, and a forced reveal can cost the team two points for
+ * guessing on the wrong side of the dial.
+ *
+ * Once a round is revealed there is nothing to rescue — it is scored, and
+ * `next` is the way on.
+ */
+export function canSkipRound(phase: Phase): boolean {
+  return phase !== "reveal";
+}
+
+// ---------------------------------------------------------------------
+// Calibration — how each person did, across a whole game
+//
+// The scoreboard is a team number by design: a round is won by a group
+// agreeing, and rewarding individuals for it would push people to guess
+// against their team. But the question everyone asks when the game ends is
+// personal — "was I the one dragging us off?" — and the game already knows the
+// answer. Every reveal writes `reveal_detail`, which carries each marker and
+// how far off it was, so the end-of-game card is a fold over rows that already
+// exist. Nothing extra is recorded, and no new column is needed.
+// ---------------------------------------------------------------------
+
+export interface Calibration {
+  playerId: string;
+  name: string;
+  /** Markers placed. Rounds spent giving the clue do not count against you. */
+  markers: number;
+  /** Mean distance from the secret spot, one decimal. Null with no markers. */
+  avgError: number | null;
+  /** The closest they got all game. Null with no markers. */
+  best: number | null;
+  /** Markers inside the bullseye band — the same 5 the live scoring uses. */
+  bullseyes: number;
+  betsPlaced: number;
+  betsWon: number;
+}
+
+/**
+ * What a stored reveal actually is once it comes back out of the database.
+ *
+ * Typed loosely on purpose. `rounds.reveal_detail` is a jsonb column, so its
+ * contents are whatever some past deploy wrote there — not what today's
+ * `RevealDetail` interface promises. A shape from an older version of the game
+ * must produce a slightly thinner card, never a crash on the winner screen.
+ */
+export interface StoredReveal {
+  guesses?: Array<Partial<RevealDetailGuess> | null> | null;
+  bets?: Array<Partial<RevealDetailBet> | null> | null;
+}
+
+/** A finite distance, or null. */
+function distanceOf(raw: unknown): number | null {
+  const n = typeof raw === "number" ? raw : Number(raw);
+  return Number.isFinite(n) ? Math.abs(n) : null;
+}
+
+/**
+ * Folds a game's reveals into one row per person.
+ *
+ * Ordered most calibrated first, with anyone who never placed a marker last —
+ * a player can finish a short game having only given clues and bet, and their
+ * missing average must not read as a perfect zero.
+ *
+ * Players who left mid-game still appear. `reveal_detail` is jsonb rather than
+ * foreign keys, so it keeps its own copy of the name and survives the row being
+ * deleted. That is the right answer: they played those rounds.
+ */
+export function foldCalibration(details: Array<StoredReveal | null | undefined>): Calibration[] {
+  interface Acc {
+    playerId: string;
+    name: string;
+    sum: number;
+    markers: number;
+    best: number | null;
+    bullseyes: number;
+    betsPlaced: number;
+    betsWon: number;
+  }
+  const by = new Map<string, Acc>();
+
+  const seat = (id: string, name: string): Acc => {
+    let acc = by.get(id);
+    if (!acc) {
+      by.set(
+        id,
+        (acc = {
+          playerId: id,
+          name,
+          sum: 0,
+          markers: 0,
+          best: null,
+          bullseyes: 0,
+          betsPlaced: 0,
+          betsWon: 0,
+        })
+      );
+    }
+    // A later round's spelling wins, which matters when a duplicate name was
+    // disambiguated between games.
+    if (name) acc.name = name;
+    return acc;
+  };
+
+  for (const detail of details) {
+    if (!detail) continue;
+
+    for (const g of detail.guesses ?? []) {
+      if (!g?.player_id) continue;
+      const d = distanceOf(g.distance);
+      if (d === null) continue;
+      const acc = seat(g.player_id, g.player_name ?? "");
+      acc.sum += d;
+      acc.markers += 1;
+      if (acc.best === null || d < acc.best) acc.best = d;
+      if (d <= 5) acc.bullseyes += 1;
+    }
+
+    for (const b of detail.bets ?? []) {
+      if (!b?.player_id) continue;
+      const acc = seat(b.player_id, b.player_name ?? "");
+      acc.betsPlaced += 1;
+      if (b.correct) acc.betsWon += 1;
+    }
+  }
+
+  return [...by.values()]
+    .map((a) => ({
+      playerId: a.playerId,
+      name: a.name,
+      markers: a.markers,
+      avgError: a.markers === 0 ? null : Math.round((a.sum / a.markers) * 10) / 10,
+      best: a.best === null ? null : Math.round(a.best * 10) / 10,
+      bullseyes: a.bullseyes,
+      betsPlaced: a.betsPlaced,
+      betsWon: a.betsWon,
+    }))
+    .sort(
+      (a, b) =>
+        (a.avgError ?? Number.POSITIVE_INFINITY) - (b.avgError ?? Number.POSITIVE_INFINITY) ||
+        a.name.localeCompare(b.name)
+    );
 }
 
 // ---------------------------------------------------------------------

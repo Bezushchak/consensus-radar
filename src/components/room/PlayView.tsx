@@ -7,7 +7,7 @@ import Poles from "@/components/Poles";
 import * as api from "@/lib/client/api";
 import { track } from "@/lib/client/track";
 import { MAX_CLUE_WORDS, clueErrorKey, validateClue, type ClueReason } from "@/lib/game/clue";
-import { CLUE_MAX_LEN, scoreFor } from "@/lib/game/engine";
+import { CLUE_MAX_LEN, clueGiverIsAway, scoreFor } from "@/lib/game/engine";
 import type { RunAction } from "./RoomClient";
 import type { Identity, LiveGuess, Player, RoomState, Round } from "@/lib/types";
 
@@ -152,6 +152,29 @@ export default function PlayView({
 
   const pill = `${t("round")} ${round.round_no} · ${round.team_name}`;
 
+  // The same rule the server enforces in `skipRound`, so the button is only
+  // ever offered to someone it will actually work for. Read at render rather
+  // than on a timer: every tab refetches the room at least every 15 seconds,
+  // which is close enough for a two-minute threshold.
+  const maySkip =
+    me.is_host ||
+    amClueGiver ||
+    (round.phase === "clue" && clueGiverIsAway(players, round.clue_giver_id, Date.now()));
+
+  async function skip() {
+    if (!window.confirm(t("skipConfirm"))) return;
+    const res = await run("skip");
+    // Only the device that actually did the skipping counts. Two taps, or the
+    // host and the clue-giver pressing together, delete one row between them —
+    // and the loser gets the same fresh state back as the winner, so a plain
+    // "the call succeeded" check would count one rescue twice and quietly
+    // inflate `round_skipped ÷ round_revealed`. A skip always replaces the
+    // round, so a different id is the proof that this press is the one.
+    if (res && res.round?.id !== round.id) {
+      track("round_skipped", { round: round.round_no, phase: round.phase });
+    }
+  }
+
   const detail = round.reveal_detail;
   const ghosts = useMemo(
     () => (detail?.guesses ?? []).map((g) => ({ value: g.value, label: g.player_name })),
@@ -170,6 +193,7 @@ export default function PlayView({
           pill={pill}
           run={run}
           busy={busy}
+          onSkip={skip}
         />
       );
     }
@@ -189,6 +213,28 @@ export default function PlayView({
           <span className="spin" />
           {t("waitClue", { name: round.clue_giver_name ?? "?" })}
         </p>
+
+        {/* The dead end, and the way out of it. Until a clue exists the
+            guessers have no control at all, so once the clue-giver has gone
+            quiet the escape hatch has to be on their screen — not only on the
+            host's, who may well be the person who left. */}
+        {maySkip ? (
+          <>
+            <p className="sub center" style={{ marginTop: 4 }}>
+              {t("skipHint")}
+            </p>
+            <div className="actions">
+              <button
+                className="btn ghost wide"
+                data-ev="skip-round"
+                disabled={busy}
+                onClick={() => void skip()}
+              >
+                {t("skipRound")}
+              </button>
+            </div>
+          </>
+        ) : null}
       </section>
     );
   }
@@ -451,12 +497,15 @@ function ClueComposer({
   pill,
   run,
   busy,
+  onSkip,
 }: {
   round: Round;
   target: number | null;
   pill: string;
   run: RunAction;
   busy: boolean;
+  /** Give this scale up. Their own turn, so always theirs to abandon. */
+  onSkip: () => void | Promise<void>;
 }) {
   const { t } = useLang();
   const [clue, setClue] = useState("");
@@ -547,6 +596,16 @@ function ClueComposer({
           onClick={send}
         >
           {t("sendClue")}
+        </button>
+        {/* A scale you cannot clue is worth less than the next one. Cheaper
+            than sending a clue you know is bad, and it costs the team nothing. */}
+        <button
+          className="btn ghost"
+          data-ev="skip-round"
+          disabled={busy}
+          onClick={() => void onSkip()}
+        >
+          {t("skipRound")}
         </button>
       </div>
     </section>

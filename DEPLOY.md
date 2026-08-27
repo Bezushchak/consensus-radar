@@ -30,7 +30,7 @@ npm install
 npm run verify
 ```
 
-`verify` runs the type checker, the 33 unit tests, and a production build. All three must pass. This is the same gate Vercel will run, so if it passes here it will pass there.
+`verify` runs the type checker, the 55 unit tests, and a production build. All three must pass. This is the same gate Vercel will run, so if it passes here it will pass there.
 
 ---
 
@@ -185,11 +185,12 @@ One warning you will see in the build log, and can ignore: *Due to `"engines": {
 | `NEXT_PUBLIC_SUPABASE_ANON_KEY` | the anon public key |
 | `SUPABASE_SERVICE_ROLE_KEY` | the service_role secret key |
 
-Two more are optional and can wait until you've read Step 6:
+The rest are optional and can wait until you've read Steps 5 to 7:
 
 | Name | Value | What it does |
 |---|---|---|
 | `ANALYTICS_TOKEN` | any long random string | Requires that string to read `/api/analytics` and `/analytics`. Without it, both are open to anyone with the URL. |
+| `CRON_SECRET` | any long random string | Switches on the nightly housekeeping job. Without it `/api/cron/cleanup` refuses every request, including Vercel's own. See Step 7. |
 | `NEXT_PUBLIC_TRACK_POINTER` | `1` | Turns on the sampled pointer heat grid. Off by default. |
 | `MIXPANEL_TOKEN` | your Mixpanel project token | Mirrors every event to Mixpanel too. See Step 6. |
 | `MIXPANEL_HOST` | `https://api-eu.mixpanel.com` | Only needed if your Mixpanel project is US-hosted, in which case set `https://api.mixpanel.com`. |
@@ -216,13 +217,15 @@ Vercel builds every push to `main` and promotes it to production automatically. 
 
 Open the production URL on your phone, create a room, and read the four-character code out loud to somebody sitting near you (or send them the link with the Copy button). Have them open the same URL on their own phone, enter the code, and pick a team.
 
-Check these five things, which together exercise everything that could go wrong across devices:
+Check these seven things, which together exercise everything that could go wrong across devices:
 
 1. Both names appear in the lobby on both phones within a second or two.
 2. Each phone is on a different team, and Start Game becomes clickable only once two teams have someone in them.
 3. Only the clue-giver's phone shows the secret percentage. Look at the other phones and confirm the number is genuinely absent.
 4. When a guesser locks their marker, the other phones see their name tick over to done without showing the value they chose.
 5. At reveal, everybody sees the same target, the same averaged marker, and the per-player breakdown.
+6. **The escape hatches, which need a phone to actually go quiet.** On the clue-giver's turn, have them press Skip this round: nothing is scored, the turn passes to the other team, and the round number does not advance. Then close the clue-giver's tab entirely and wait two minutes on the other phone — a Skip button should appear there too, because the people staring at an empty dial are the ones who need it. Same test for hosting: close the host's tab, wait two minutes, and the other phone should offer to take over as host. Both waits are real; the threshold is two minutes and the host and clue-giver report in every 45 seconds, so nothing appears sooner.
+7. **The end of the game.** Play to the target score and check the winner screen shows the per-player table under the scoreboard — average error, best, bullseyes, bets — with your own row highlighted. Somebody who only ever gave clues appears at the bottom with "clues only" rather than a zero.
 
 There is no player limit in the code. Practically, a room works comfortably up to about twenty people across four teams; beyond that the lobby list gets unwieldy long before anything technical strains.
 
@@ -242,6 +245,8 @@ The four tiles first: **sessions** (one browser tab counts once), **events**, **
 
 Then the funnel, which is the same nine steps every player walks: opened the app → started the create form → created a room → joined → started the game → sent a clue → locked a guess → completed a round → finished a game. **Conversion** is the share of step 1 that got this far. **Drop-off** is the share of the *previous* step that never arrived, and the largest number in that column is the thing to fix next. A big drop between "created a room" and "joined" means people can't get their friends in; a big drop between "joined" and "locked a guess" means the game itself is losing them.
 
+Then **Other events**, which is everything the app records that isn't a step in that walk. Most of it is context — who opened the leaderboard, who switched language — but two rows are the ones to actually watch, because they only happen when a room has stopped moving. `round_skipped` next to `round_revealed` is how often a scale or a clue-giver defeats a table. `host_claimed` next to `room_created` is how often the person who opened the room walked away from it. If either ratio climbs, the fix is upstream of the button: a better scale pool, a clearer clue screen, fewer host-only controls.
+
 Then the click table, which is literally who clicked what, per control per page, with the number of distinct sessions beside the raw count. A control that shows as `(unlabelled)` is one nobody labelled in the code yet — worth noticing rather than hiding.
 
 Then the rooms table: how many devices joined each room versus how many actually played a round. This is the per-room version of the drop-out rate and it is usually the most actionable thing on the page, because it separates "nobody came" from "people came and bounced".
@@ -252,13 +257,15 @@ If you'd rather read all this in Mixpanel, Step 6 mirrors the same events there.
 
 **5.4** Optional: pointer heat. Set `NEXT_PUBLIC_TRACK_POINTER=1` and each page view sends one event holding a 12×8 grid of where the cursor spent time. Cursor *trails* are deliberately not recorded — sixty events a second per player is both a bill and a way of identifying somebody — so this is a coarse heat map, not a replay, and it only tells you which region of the screen people hover. Leave it off unless you have a specific layout question.
 
-**5.5** Keep the table small. Analytics rows are cheap but not free, so add a second daily cron job in Supabase → Integrations → Cron running:
+**5.5** Keep the table small. Analytics rows are cheap but not free, and events older than a quarter are not answering any question you still have. **This is already handled** by the nightly job in Step 7 — the same run that clears out stale rooms also deletes events older than 90 days, so if you set `CRON_SECRET` there is nothing to do here.
+
+If you'd rather run it from Supabase instead, or want a different window, the function is yours to call directly in Supabase → Integrations → Cron:
 
 ```sql
-select public.purge_old_events();
+select public.purge_old_events(interval '30 days');
 ```
 
-That deletes events older than 90 days. Pass an interval if you want a different window: `select public.purge_old_events(interval '30 days');`.
+It is safe to have both: the second run finds nothing left to delete and returns `0`.
 
 **What is not collected**, so you can say so if anyone asks: no IP addresses, no user agents, no names, no clue text, no cursor trails, and nothing that leaves your Supabase project. A session id is random and dies with the tab. The device id is the same non-credential id the leaderboard uses and grants access to nothing. Anyone can opt out for their browser by running `localStorage.setItem("cr:no-track", "1")` in the console, and a browser sending Do Not Track is skipped automatically.
 
@@ -345,17 +352,26 @@ Optional but cheap: **Retention** (do people come back for a second game — pic
 
 **A nicer URL.** In Vercel, Settings → Domains lets you rename the project so the free URL becomes something like `consensus-radar-betterme.vercel.app`, or attach a domain you own. A short URL matters here, because people type it on phones.
 
-**Do rooms expire?** Not on their own. A room you create today will still be there next month, still joinable with the same four-character code, unless something deletes it. Nothing in the app deletes rooms; the only thing that does is a function you have to schedule yourself:
+**Do rooms expire?** Yes, once you set one variable. Nothing in the game itself ever deletes a room — a room you create today would otherwise still be there next month, still answering to the same four-character code — so the app ships a nightly housekeeping job instead. It's already wired: `vercel.json` schedules `GET /api/cron/cleanup` at 04:00 UTC every day, and Vercel picks that file up on deploy with nothing to configure in the dashboard.
 
-```sql
-select public.purge_stale_rooms();
+The one thing you have to do is give it the secret, because that route holds the service-role key and an open URL there would be an unauthenticated delete-everything button. Generate a long random string, add it in Vercel → Settings → Environment Variables as `CRON_SECRET` for Production, and redeploy. Vercel then sends it as `Authorization: Bearer <secret>` on every cron invocation, and the route checks it. **Leave the variable unset and the route refuses everything with a 503** — closed by default, so a deploy that forgets the secret loses the cleanup rather than exposing it.
+
+Check it by hand once, replacing both placeholders:
+
+```bash
+curl -s -H "Authorization: Bearer YOUR-CRON-SECRET" \
+  https://YOUR-APP.vercel.app/api/cron/cleanup
 ```
 
-Go to Supabase → **Integrations → Cron** and create a job on a daily schedule running exactly that. It deletes rooms whose last activity — any join, clue, guess or reveal — was more than 24 hours ago, and leaves everything more recent alone. If you want a different window, pass one: `select public.purge_stale_rooms(interval '7 days');`.
+You want `{"ok":true,"rooms":{"deleted":N},"events":{"deleted":M}}`. Zeroes are a pass — it means there was nothing old enough to remove. A `401` means the secret in the header doesn't match the one in Vercel; a `503` means the variable isn't in the running environment, which usually means it was added after the last build. If either half reports `{"error":"..."}` instead of a count, the named function is missing from your database: run `supabase/schema.sql` again. The two deletions are deliberately independent, so one missing function never costs you the other.
 
-It's optional in the sense that nothing breaks without it; the free tier's 500 MB will hold years of games. It's worth doing anyway for one reason: room codes are only four characters, so codes get reused sooner when old rooms linger, and a stale room answering to a code somebody reads out loud is confusing.
+**What it deletes**: rooms whose last activity — any join, clue, guess or reveal — was more than 48 hours ago, and analytics events older than 90 days. The room cutoff is measured from `updated_at`, not from creation, so a game that has been running for eight hours is safe.
 
-Rooms are throwaway; results are not. Finished games are copied into `game_results` and `player_round_stats` before their room becomes eligible for deletion, so purging never costs you a leaderboard entry.
+**What it will not touch**: `game_results` and `player_round_stats`, ever. Finished games are copied there the moment the winner screen appears, so purging a room never costs you a leaderboard entry. Rooms are throwaway; results are not.
+
+Both rules live in `supabase/schema.sql` as `security definer` functions with `execute` revoked from `anon` and `authenticated` — the route only calls them. If you want different windows, change the intervals in `src/app/api/cron/cleanup/route.ts`, or call the functions from Supabase → Integrations → Cron yourself: `select public.purge_stale_rooms(interval '7 days');`.
+
+Nothing breaks if you skip all of this — the free tier's 500 MB will hold years of games. It's worth doing for one reason that has nothing to do with storage: room codes are only four characters, so codes get recycled sooner when old rooms linger, and a stale room answering to a code somebody just read out loud is a confusing way to lose ten minutes.
 
 **Watch out for the free-tier pause.** Supabase pauses free projects after a week with no activity, and a paused database means the app returns errors. Opening the dashboard or the app resets that clock, so it only bites if you build this and then don't touch it for a fortnight. Restoring a paused project takes one click.
 
@@ -404,6 +420,10 @@ Every round shows the same handful of scales — the seed didn't run. Check `/ap
 The analytics page is empty after people have played — three things to check in order. `/api/health` will say if `analytics_events` is missing. The period selector defaults to seven days, so try All time. And events are batched for a few seconds before being sent, so a tab that was closed instantly may have flushed nothing at all; if the table has rows but the page shows none, that's the period, not the pipeline.
 
 `/api/analytics` returns 401 — `ANALYTICS_TOKEN` is set, so the page needs the key in its URL: `/analytics?key=YOUR-TOKEN`. To call the API directly, send it as an `x-analytics-key` header.
+
+Old rooms are piling up and the cron never seems to run — check the three things in that order. Vercel → your project → **Cron Jobs** should list `/api/cron/cleanup` daily; if the tab is empty, `vercel.json` wasn't in the deploy, so confirm it was committed and push again. If the job is listed but every run shows a 503, `CRON_SECRET` isn't in the production environment — add it and **redeploy**, since a variable added after a build is not in that build. If runs return 200 but the counts are always zero and rooms plainly are old, then `purge_stale_rooms` measures from `updated_at`, so check whether something is still touching those rooms; a `{"error":...}` in place of a count instead means the function isn't in the database and `supabase/schema.sql` needs re-running.
+
+The takeover notice appears in a room where the host is sitting right there — that means the host's device stopped reporting in. `last_seen_at` only moves on authenticated requests, and an idle screen makes none, so the host and the current clue-giver send a deliberate heartbeat every 45 seconds while their tab is visible. A phone that has been locked or backgrounded stops beating on purpose, which is the behaviour you want: a host in somebody's pocket genuinely is away. If it happens on an awake, foreground tab, look in Vercel's function logs for failing `POST /api/rooms/CODE/me` calls.
 
 Mixpanel shows nothing, in this order. Does `/api/health` say `"mixpanel":"on"`? If it says `off`, the token isn't in that environment — locally check `.env` or `.env.local` (both are read), in production check Vercel and remember that adding a variable needs a redeploy. Then run `npm run mixpanel:test`, which reports the actual rejection reason rather than leaving you guessing. If the probe is accepted but real events don't appear, check the Vercel function logs for lines beginning `[mixpanel]`. And if everything claims success and the project is still empty, you're almost certainly sending to the wrong data region: an `eu.mixpanel.com` project needs `https://api-eu.mixpanel.com`, and the US host accepts the request and drops it.
 

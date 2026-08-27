@@ -1,6 +1,7 @@
 "use client";
 
 import { deviceUid } from "./identity";
+import type { Calibration } from "../game/engine";
 import type { Identity, LiveGuess, RoomState } from "../types";
 
 /** Thin typed wrapper around the backend. All errors surface as ApiCallError. */
@@ -98,6 +99,16 @@ export function fetchState(code: string) {
   return request<RoomState>(`/api/rooms/${encodeURIComponent(code)}`);
 }
 
+/**
+ * Per-player calibration for the game in this room. Read once, on the winner
+ * screen — deliberately not part of the polled room state.
+ */
+export function fetchSummary(code: string) {
+  return request<{ code: string; rounds: number; players: Calibration[] }>(
+    `/api/rooms/${encodeURIComponent(code)}/summary`
+  );
+}
+
 /** Throws ApiCallError(401) when the seat is genuinely gone. */
 export function verifyMembership(code: string, identity: Identity) {
   return request<{ ok: true; playerId: string; name: string }>(
@@ -130,8 +141,10 @@ export type RoomAction =
   | "bet"
   | "reveal"
   | "next"
+  | "skip"
   | "again"
   | "end"
+  | "host"
   | "leave";
 
 export function act(

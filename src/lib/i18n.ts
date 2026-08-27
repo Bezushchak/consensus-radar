@@ -129,6 +129,20 @@ export const STRINGS: Dict = {
   },
   waitingOthers: { ua: "Чекаємо на інших…", en: "Waiting for the others…" },
 
+  // ---- rescuing a stuck round ----
+  // The clue-giver is the one person a round cannot continue without. If they
+  // close the tab, the guessers are left on a screen with no button on it, so
+  // the escape hatch has to be visible to them and not only to the host.
+  skipRound: { ua: "Пропустити раунд", en: "Skip this round" },
+  skipHint: {
+    ua: "Якщо clue так і не з'явиться — пропустіть раунд. Рахунок не змінюється, шкала повертається в колоду, хід переходить наступній команді.",
+    en: "If the clue never arrives, skip the round. Nothing is scored, the scale goes back in the deck, and the turn passes to the next team.",
+  },
+  skipConfirm: {
+    ua: "Пропустити цей раунд без нарахування очок?",
+    en: "Skip this round without scoring it?",
+  },
+
   // ---- reveal ----
   revealTitle: { ua: "Розкриття", en: "The reveal" },
   secretWas: { ua: "таємна точка", en: "secret spot" },
@@ -151,6 +165,32 @@ export const STRINGS: Dict = {
   playAgain: { ua: "Зіграти ще", en: "Play again" },
   endGame: { ua: "Завершити гру", en: "End the game" },
   resultsSaved: { ua: "Результат збережено в лідерборд.", en: "The result has been saved to the leaderboard." },
+
+  // ---- per-player calibration, end of game ----
+  calibTitle: { ua: "Хто як влучав", en: "How close each of you got" },
+  calibSub: {
+    ua: "Середня похибка ваших власних маркерів. Очки — командні, це — особисте.",
+    en: "The average error of your own markers. The points are the team's; this is yours.",
+  },
+  calibAvg: { ua: "середня похибка", en: "average error" },
+  calibBest: { ua: "найкращий", en: "best" },
+  calibBulls: { ua: "в яблучко", en: "bullseyes" },
+  calibBets: { ua: "ставки", en: "bets" },
+  calibNoMarkers: { ua: "лише clue", en: "clues only" },
+  calibEmpty: {
+    ua: "Ще нема жодного розкритого раунду.",
+    en: "No round has been revealed yet.",
+  },
+
+  // ---- the host has gone quiet ----
+  // Start, settings and end-game are host-only, so a host who closes the tab
+  // freezes the room for everybody else. Anyone left can pick the crown up.
+  hostAwayTitle: { ua: "Хост не відповідає", en: "The host has gone quiet" },
+  hostAwaySub: {
+    ua: "Від хоста не було чути кілька хвилин. Кнопки старту й налаштувань — тільки в нього, тож хтось має перебрати роль.",
+    en: "Nothing has been heard from the host for a few minutes. Starting, settings and ending the game are host-only, so someone needs to take over.",
+  },
+  claimHostBtn: { ua: "Стати хостом", en: "Take over as host" },
 
   // ---- leaderboard ----
   lbTitle: { ua: "Лідерборд", en: "Leaderboard" },

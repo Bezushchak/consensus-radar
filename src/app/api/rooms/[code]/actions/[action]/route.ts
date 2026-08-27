@@ -1,11 +1,13 @@
 import { credentials, guard, readBody, requireCode } from "@/lib/server/http";
 import {
   ApiError,
+  claimHost,
   endGame,
   forceReveal,
   leaveRoom,
   nextRound,
   playAgain,
+  skipRound,
   startGame,
   submitBet,
   submitClue,
@@ -31,8 +33,10 @@ export const dynamic = "force-dynamic";
  *   bet       { side: left|right }    other teams
  *   reveal    -                       host or clue-giver (skip stragglers)
  *   next      -                       host or clue-giver
+ *   skip      -                       host or clue-giver, abandon the round
  *   again     -                       host only, back to lobby
  *   end       -                       host only, finish and record results
+ *   host      -                       take over from a host who has gone quiet
  *   leave     -                       drop out of the room
  */
 export async function POST(
@@ -68,10 +72,14 @@ export async function POST(
         return forceReveal(code, playerId, token);
       case "next":
         return nextRound(code, playerId, token);
+      case "skip":
+        return skipRound(code, playerId, token);
       case "again":
         return playAgain(code, playerId, token);
       case "end":
         return endGame(code, playerId, token);
+      case "host":
+        return claimHost(code, playerId, token);
       case "leave":
         return leaveRoom(code, playerId, token);
       default:

@@ -11,15 +11,20 @@ import {
   MIN_TEAM_SIZE,
   averageMarker,
   betIsCorrect,
+  canSkipRound,
   cleanName,
   cleanUid,
   clampSlider,
+  clueGiverIsAway,
   firstTeamIndexWithPlayers,
+  foldCalibration,
   generateRoomCode,
+  hostIsAway,
   leader,
   makeTeams,
   nextTeamIndex,
   pickClueGiver,
+  pickNewHost,
   pickScale,
   playableTeams,
   randomTarget,
@@ -27,6 +32,8 @@ import {
   scoreFor,
   teamsAtGoal,
   underStaffedTeams,
+  type Calibration,
+  type StoredReveal,
 } from "../game/engine";
 import { clueErrorKey, validateClue } from "../game/clue";
 import { t } from "../i18n";
@@ -159,6 +166,39 @@ export async function getState(code: string): Promise<RoomState> {
   const publicPlayers = players.map((p) => ({ ...p, player_uid: null }));
 
   return { room, players: publicPlayers, round, guesses, bets };
+}
+
+/**
+ * Per-player calibration for the game just finished.
+ *
+ * Its own endpoint rather than part of `getState`, because every open tab
+ * refetches the state every fifteen seconds and this is read once, on the
+ * winner screen. Folding it in would buy a nicer client at the cost of an extra
+ * query on every poll of every game.
+ *
+ * No credentials: the reveal detail this is built from was shown to the whole
+ * table, round by round, as it happened. Nothing here is new information.
+ *
+ * Scoped by `room_id`, which is also what scopes it to *this* game — `playAgain`
+ * deletes the room's rounds, so a rematch starts from an empty fold rather than
+ * inheriting the last game's averages.
+ */
+export async function roomSummary(code: string): Promise<{
+  code: string;
+  rounds: number;
+  players: Calibration[];
+}> {
+  const room = await getRoom(code);
+  const { data, error } = await admin()
+    .from("rounds")
+    .select("reveal_detail")
+    .eq("room_id", room.id)
+    .not("reveal_detail", "is", null)
+    .order("round_no", { ascending: true });
+  if (error) throw new ApiError(500, error.message);
+
+  const details = (data ?? []).map((r) => (r as { reveal_detail: StoredReveal | null }).reveal_detail);
+  return { code: room.code, rounds: details.length, players: foldCalibration(details) };
 }
 
 /** Validates the device token and returns the room + the player it belongs to. */
@@ -941,16 +981,7 @@ export async function nextRound(code: string, playerId: string, token: string) {
   const mayAdvance = player.is_host || player.id === round.clue_giver_id;
   if (!mayAdvance) throw new ApiError(403, "Only the host or the clue-giver can start the next round");
 
-  // Prefer a team that can actually play a round. People leave mid-game, and a
-  // team down to one person has a clue-giver and no guessers — handing it the
-  // turn would stall the room until the host force-revealed an empty round.
-  // Falling back to any non-empty team is deliberate: a stalled round the host
-  // can reveal is still better than a room that cannot advance at all.
-  const players = await getPlayers(room.id);
-  const next =
-    nextTeamIndex(room.teams, players, room.active_team_index, MIN_TEAM_SIZE) ??
-    nextTeamIndex(room.teams, players, room.active_team_index, 1);
-  if (next === null) throw new ApiError(409, "No team has any players left");
+  const next = nextPlayableTeam(room, await getPlayers(room.id));
 
   const { error } = await admin()
     .from("rooms")
@@ -960,6 +991,101 @@ export async function nextRound(code: string, playerId: string, token: string) {
 
   await openRound(await getRoom(code));
   return getState(code);
+}
+
+/**
+ * Abandon the round in progress and deal a fresh one to the next team.
+ *
+ * The rescue hatch for the one state the game cannot play its way out of: the
+ * clue never arrives. Reveal refuses a round with no clue (correctly — there is
+ * nothing to score), so before this existed the only way past a clue-giver who
+ * had closed their tab was for the host to end the game, which throws away the
+ * scoreboard and writes a result nobody played for.
+ *
+ * The scoreboard is deliberately untouched: nothing about this round is scored,
+ * for either the guessing team or the bettors. The round row is deleted rather
+ * than kept as a blank, so it never lands in `game_results.rounds_played`, the
+ * hardest-scales view, or a player's average.
+ */
+export async function skipRound(code: string, playerId: string, token: string) {
+  const { room, player } = await authenticate(code, playerId, token);
+  if (room.status !== "playing") throw new ApiError(409, "No game in progress");
+
+  const round = await requireCurrentRound(room);
+  if (!canSkipRound(round.phase)) {
+    throw new ApiError(409, "This round is already revealed — start the next one instead");
+  }
+
+  // Who may. The host and the clue-giver always, as with reveal and next —
+  // plus, in the clue phase only, anybody in the room once the clue-giver has
+  // gone quiet. That last clause is what actually unsticks the dead end: the
+  // people staring at the empty dial are usually neither the host nor the
+  // clue-giver, and it is safe precisely there, because before a clue exists
+  // the round holds nothing worth protecting. In the guess phase markers are
+  // already down, so it stays with the host — who has `reveal` as the gentler
+  // option anyway.
+  const players = await getPlayers(room.id);
+  const maySkip =
+    player.is_host ||
+    player.id === round.clue_giver_id ||
+    (round.phase === "clue" && clueGiverIsAway(players, round.clue_giver_id, Date.now()));
+  if (!maySkip) throw new ApiError(403, "Only the host or the clue-giver can skip the round");
+
+  // Chosen before anything is destroyed, so a room where no team can play is
+  // refused with its round intact rather than left with none.
+  const next = nextPlayableTeam(room, players);
+
+  // Claimed by deleting, the way the reveal is claimed by updating: two taps,
+  // or the host and the clue-giver pressing together, delete one row between
+  // them and only the winner opens the replacement. Guesses, bets and the
+  // secret go with it — every one of them is `on delete cascade`.
+  const { data: claimed, error: delErr } = await admin()
+    .from("rounds")
+    .delete()
+    .eq("id", round.id)
+    .in("phase", ["clue", "guess"])
+    .select("id")
+    .maybeSingle();
+  if (delErr) throw new ApiError(500, describe(delErr.message));
+  if (!claimed) return getState(code);
+
+  // The round number goes back with the round, so the replacement is a second
+  // attempt at round 4 rather than a gap in the count — `openRound` reads
+  // `round_no` off the room and adds one.
+  const { error } = await admin()
+    .from("rooms")
+    .update({
+      active_team_index: next,
+      current_round_id: null,
+      round_no: Math.max(round.round_no - 1, 0),
+      updated_at: new Date().toISOString(),
+    })
+    .eq("id", room.id);
+  if (error) throw new ApiError(500, error.message);
+
+  await openRound(await getRoom(code));
+  return getState(code);
+}
+
+/**
+ * The next team that can take a turn.
+ *
+ * Prefers a team that can actually play a round. People leave mid-game, and a
+ * team down to one person has a clue-giver and no guessers — handing it the
+ * turn would stall the room until someone force-revealed an empty round.
+ * Falling back to any non-empty team is deliberate: a stalled round that can be
+ * revealed or skipped is still better than a room that cannot advance at all.
+ *
+ * Pure, and takes the roster rather than reading it, so a caller that already
+ * has the players decides the turn from the same snapshot it decided everything
+ * else from.
+ */
+function nextPlayableTeam(room: Room, players: Player[]): number {
+  const next =
+    nextTeamIndex(room.teams, players, room.active_team_index, MIN_TEAM_SIZE) ??
+    nextTeamIndex(room.teams, players, room.active_team_index, 1);
+  if (next === null) throw new ApiError(409, "No team has any players left");
+  return next;
 }
 
 export async function endGame(code: string, playerId: string, token: string) {
@@ -1026,6 +1152,15 @@ export async function playAgain(code: string, playerId: string, token: string) {
   const { room, player } = await authenticate(code, playerId, token);
   requireHost(room, player);
 
+  // Never while a game is running. This deletes every round and zeroes every
+  // score, and the button that reaches it lives on the winner screen — so the
+  // only ways to arrive here mid-game are a tab left open on a game that has
+  // since been restarted, or a direct call. Both of them meant the previous
+  // game, and both would silently throw away the one in progress.
+  if (room.status === "playing") {
+    throw new ApiError(409, "A game is in progress — end it before starting a new one");
+  }
+
   await admin().from("players").update({ clue_turns: 0 }).eq("room_id", room.id);
   await admin().from("rounds").delete().eq("room_id", room.id);
 
@@ -1046,17 +1181,92 @@ export async function playAgain(code: string, playerId: string, token: string) {
   return getState(code);
 }
 
+/**
+ * Take over hosting from a host who has stopped answering.
+ *
+ * There is no other way out of one particular dead room: the host closes the
+ * tab in the lobby, and start, settings and end are all host-only. Everyone
+ * else can see each other, and nobody can begin.
+ *
+ * Deliberately a button somebody presses rather than something the server does
+ * on a timer. `last_seen_at` only moves when a device makes a request, so a
+ * quiet host and an absent one look alike from here — but a player who can see
+ * that nothing is happening knows the difference, and the room is theirs to
+ * rescue. `AWAY_AFTER_MS` is what stops it being a way to snatch the crown
+ * from someone mid-sentence.
+ */
+export async function claimHost(code: string, playerId: string, token: string) {
+  const { room, player } = await authenticate(code, playerId, token);
+  if (player.is_host) return getState(code);
+
+  const players = await getPlayers(room.id);
+  if (!hostIsAway(players, room.host_player_id, Date.now())) {
+    throw new ApiError(409, "The host is still here");
+  }
+
+  // Claimed atomically on the room row: whoever moves the crown gets the row
+  // back, and a second claimant reads null and stops. Two people pressing
+  // together therefore cannot leave the room with two hosts, or none.
+  const claim = admin()
+    .from("rooms")
+    .update({ host_player_id: player.id, updated_at: new Date().toISOString() })
+    .eq("id", room.id);
+  const { data: claimed, error: claimErr } = await (
+    room.host_player_id === null
+      ? claim.is("host_player_id", null)
+      : claim.eq("host_player_id", room.host_player_id)
+  )
+    .select("id")
+    .maybeSingle();
+  if (claimErr) throw new ApiError(500, claimErr.message);
+  if (!claimed) return getState(code);
+
+  // New crown first, old ones after: a moment with two hosts is harmless,
+  // a moment with none is another stuck room.
+  await admin().from("players").update({ is_host: true }).eq("id", player.id);
+  await admin()
+    .from("players")
+    .update({ is_host: false })
+    .eq("room_id", room.id)
+    .neq("id", player.id);
+
+  return getState(code);
+}
+
 export async function leaveRoom(code: string, playerId: string, token: string) {
   const { room, player } = await authenticate(code, playerId, token);
   await admin().from("players").delete().eq("id", player.id);
 
   if (player.is_host) {
     const rest = await getPlayers(room.id);
-    if (rest.length > 0) {
-      await admin().from("players").update({ is_host: true }).eq("id", rest[0].id);
-      await admin().from("rooms").update({ host_player_id: rest[0].id }).eq("id", room.id);
+    // The longest-present player who is still answering, and the plain join
+    // order only if none of them is. A crown handed to another closed tab
+    // leaves the room exactly as stuck as it was.
+    const heir = pickNewHost(rest, Date.now()) ?? (rest.length > 0 ? rest[0] : null);
+    if (heir) {
+      await admin().from("players").update({ is_host: true }).eq("id", heir.id);
+      await admin().from("rooms").update({ host_player_id: heir.id }).eq("id", room.id);
     }
   }
+
+  // A leave can be the event that finishes the round: the person who had not
+  // guessed yet is the one who left. Nothing else would notice — no guess and
+  // no bet is coming — so the round would sit on "waiting for 1 more" until
+  // somebody forced it by hand.
+  //
+  // Never at the cost of the leave itself, though. The row is already deleted
+  // by this point, so the player has left whatever happens next; a failure
+  // here leaves a round that can still be revealed or skipped, and reporting
+  // it as a failed leave would only confuse the person who left.
+  if (room.status === "playing" && room.current_round_id) {
+    try {
+      const round = await getRound(room.current_round_id);
+      if (round && round.phase === "guess") await maybeAutoReveal(room, round);
+    } catch (e) {
+      console.warn("[rooms] leave could not settle the round:", e);
+    }
+  }
+
   await touch(room.id);
   return { ok: true };
 }

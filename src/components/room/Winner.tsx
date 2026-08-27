@@ -1,10 +1,12 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { useLang } from "@/components/LangProvider";
 import Scoreboard from "@/components/Scoreboard";
+import * as api from "@/lib/client/api";
 import { track } from "@/lib/client/track";
+import type { Calibration } from "@/lib/game/engine";
 import type { RunAction } from "./RoomClient";
 import type { Player, RoomState } from "@/lib/types";
 
@@ -29,6 +31,25 @@ export default function Winner({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [room.id]);
 
+  // Read once, on arrival. A failure leaves the card out and says nothing: the
+  // winner screen is the payoff, and it must not carry an error message about
+  // a nice-to-have table.
+  const [calib, setCalib] = useState<Calibration[] | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    api
+      .fetchSummary(room.code)
+      .then((res) => {
+        if (!cancelled) setCalib(res.players);
+      })
+      .catch(() => {
+        if (!cancelled) setCalib([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [room.code, room.id]);
+
   return (
     <section className="card winner">
       <div className="crown">👑</div>
@@ -40,6 +61,55 @@ export default function Winner({
       <div className="ok" style={{ textAlign: "center" }}>
         {t("resultsSaved")}
       </div>
+
+      {/* The personal read on a deliberately team-scored game. Sorted by
+          average error, so the top row is whoever was easiest to tune into —
+          which is a nicer thing to be told than a rank by points would be. */}
+      {calib && calib.length > 0 ? (
+        <>
+          <h3 style={{ marginTop: 26 }}>{t("calibTitle")}</h3>
+          <p className="sub" style={{ marginTop: 0 }}>
+            {t("calibSub")}
+          </p>
+          <div className="tablewrap">
+            <table className="lb">
+              <thead>
+                <tr>
+                  <th className="rank">#</th>
+                  <th>{t("colPlayer")}</th>
+                  <th>{t("calibAvg")}</th>
+                  <th>{t("calibBest")}</th>
+                  <th>{t("calibBulls")}</th>
+                  <th>{t("calibBets")}</th>
+                </tr>
+              </thead>
+              <tbody>
+                {calib.map((p, i) => (
+                  <tr key={p.playerId} className={p.playerId === me.id ? "mine" : ""}>
+                    <td className="rank">{p.markers === 0 ? "–" : i + 1}</td>
+                    <td>
+                      {p.name || "—"}
+                      {p.playerId === me.id ? <span className="mini"> · {t("lbYou")}</span> : null}
+                    </td>
+                    <td className="num">
+                      {p.avgError === null ? (
+                        <span className="mini">{t("calibNoMarkers")}</span>
+                      ) : (
+                        p.avgError
+                      )}
+                    </td>
+                    <td className="num">{p.best === null ? "–" : p.best}</td>
+                    <td className="num">{p.bullseyes}</td>
+                    <td className="num">
+                      {p.betsPlaced === 0 ? "–" : `${p.betsWon}/${p.betsPlaced}`}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </>
+      ) : null}
 
       <div className="actions" style={{ justifyContent: "center" }}>
         {me.is_host ? (

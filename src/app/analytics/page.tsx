@@ -34,6 +34,27 @@ const STEP_LABELS: Record<string, string> = {
   game_finished: "Finished a game",
 };
 
+/**
+ * Everything the app records that is not a funnel step. Plain English rather
+ * than the event name, because the two that matter — the rescue hatches — are
+ * only interesting next to a step, and a reader should not have to know the
+ * codebase to see which those are.
+ *
+ * `click` and `pointer_heat` are excluded upstream in `foldEvents`, so they
+ * deliberately have no entry here.
+ */
+const SIDE_LABELS: Record<string, string> = {
+  join_open: "Opened the join form",
+  leaderboard_open: "Opened the leaderboard",
+  howto_open: "Opened how-to-play",
+  lang_switched: "Switched language",
+  bet_placed: "Placed a bet on the other team",
+  round_skipped: "Gave up on a round — nothing scored",
+  host_claimed: "Took over from a host who went quiet",
+  error_shown: "Saw an error message",
+  session_end: "Left (last event of a session)",
+};
+
 export default function AnalyticsPage() {
   const [period, setPeriod] = useState<Period>("week");
   const [key, setKey] = useState<string | null>(null);
@@ -182,6 +203,46 @@ export default function AnalyticsPage() {
             <p className="stepnote">
               Conversion is the share of step 1. Drop-off is the share of the previous step that
               never arrived — the biggest number in that column is where to look first.
+            </p>
+
+            {/* Not steps, so they cannot appear above — but two of them are the
+                reason a step underperforms, which is why they get their own
+                table rather than living only in Mixpanel. */}
+            <h3 style={{ marginTop: 26 }}>Other events</h3>
+            {/* `side` is read defensively: a tab left open across a deploy can
+                hold an older response that has no such field, and the guard is
+                what stops the `.map` below running on undefined. */}
+            {(data.side?.every((r) => r.events === 0) ?? true) ? (
+              <p className="empty">Nothing recorded yet.</p>
+            ) : (
+              <div className="tablewrap">
+                <table className="lb">
+                  <thead>
+                    <tr>
+                      <th>Event</th>
+                      <th>What it means</th>
+                      <th>Sessions</th>
+                      <th>Events</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {data.side.map((row) => (
+                      <tr key={row.name}>
+                        <td className="mini">{row.name}</td>
+                        <td>{SIDE_LABELS[row.name] ?? "—"}</td>
+                        <td className="num">{row.sessions}</td>
+                        <td className="num">{row.events}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+            <p className="stepnote">
+              <code>round_skipped</code> against <code>round_revealed</code> is how often a scale or
+              a clue-giver defeats a table; <code>host_claimed</code> against{" "}
+              <code>room_created</code> is how often the person who opened the room walked away from
+              it. If either climbs, the fix is upstream of the button.
             </p>
 
             <h3 style={{ marginTop: 26 }}>What people click</h3>

@@ -4,28 +4,36 @@ import { join } from "node:path";
 import { test } from "node:test";
 
 import {
+  AWAY_AFTER_MS,
   MAX_TEAMS,
   MIN_TEAM_SIZE,
   averageMarker,
   betIsCorrect,
+  canSkipRound,
   canStartGame,
   cleanClue,
   cleanName,
   cleanUid,
   clampSlider,
+  clueGiverIsAway,
   firstTeamIndexWithPlayers,
+  foldCalibration,
   generateRoomCode,
+  hostIsAway,
   makeTeams,
   nextTeamIndex,
   normalizeCode,
   pickClueGiver,
+  pickNewHost,
   pickScale,
   playableTeams,
   randomTarget,
   scoreFor,
+  seenRecently,
   teamSize,
   teamsAtGoal,
   underStaffedTeams,
+  type StoredReveal,
 } from "../src/lib/game/engine";
 import {
   MAX_CLUE_WORDS,
@@ -1076,4 +1084,268 @@ test("the demo cursor is only ever sent to an element that exists", () => {
       );
     }
   }
+});
+
+// ---------------------------------------------------------------------
+// Rescuing a room that has stopped moving
+//
+// These four predicates decide when the app is allowed to say somebody has
+// gone. They are pure for exactly this reason: getting them wrong is invisible
+// in production in the worst possible direction — a threshold that fires too
+// early shows a takeover notice in every ordinary room, and one that never
+// fires leaves a table looking at a dial with no button on it.
+// ---------------------------------------------------------------------
+
+const NOW = Date.parse("2026-01-01T12:00:00.000Z");
+const ago = (ms: number) => new Date(NOW - ms).toISOString();
+
+test("a quiet phone eventually reads as away, and a missing stamp never does", () => {
+  assert.equal(AWAY_AFTER_MS, 120_000, "two minutes is what the README and the UI promise");
+  const seen = (ms: number) => player({ id: "p", last_seen_at: ago(ms) });
+
+  assert.equal(seenRecently(seen(30_000), NOW), true);
+  assert.equal(seenRecently(seen(AWAY_AFTER_MS - 1), NOW), true);
+  assert.equal(seenRecently(seen(AWAY_AFTER_MS), NOW), false, "the threshold is exclusive");
+  assert.equal(seenRecently(seen(600_000), NOW), false);
+
+  // The asymmetry is the point. A stamp is evidence of being here; its absence
+  // is not evidence of being gone, and the two mistakes do not cost the same —
+  // a false "present" leaves the room exactly as it is today, a false "away"
+  // takes the crown off somebody holding their phone.
+  assert.equal(seenRecently(player({ id: "p", last_seen_at: "", joined_at: "" }), NOW), true);
+  assert.equal(seenRecently(player({ id: "p", last_seen_at: "junk", joined_at: "" }), NOW), true);
+
+  // No stamp of their own falls back to when they joined, which is the shape a
+  // row inserted before the column existed has.
+  assert.equal(
+    seenRecently(player({ id: "p", last_seen_at: "", joined_at: ago(600_000) }), NOW),
+    false
+  );
+});
+
+test("a room notices when the crown has stopped answering", () => {
+  const host = player({ id: "h", is_host: true, last_seen_at: ago(30_000) });
+  const quiet = player({ id: "h", is_host: true, last_seen_at: ago(600_000) });
+  const guest = player({ id: "g", last_seen_at: ago(30_000) });
+
+  assert.equal(hostIsAway([host, guest], "h", NOW), false);
+  assert.equal(hostIsAway([quiet, guest], "h", NOW), true);
+
+  // The room row points at a player who is not in it any more, which is what a
+  // leave looks like from here. Nobody holds the crown, so it is up for grabs.
+  assert.equal(hostIsAway([guest], "h", NOW), true);
+  assert.equal(hostIsAway([guest], null, NOW), true);
+
+  // `rooms.host_player_id` and `players.is_host` are written separately, so a
+  // crash between the two must not leave a room permanently hostless: the flag
+  // is the fallback, and a room with a present host is not hostless.
+  assert.equal(hostIsAway([host, guest], null, NOW), false, "the is_host flag stands in");
+
+  // An empty room has nobody to hand anything to, and a notice there would
+  // greet the first person who arrives.
+  assert.equal(hostIsAway([], "h", NOW), false);
+});
+
+test("the crown goes to whoever has been here longest, not whoever asked first", () => {
+  const roster = [
+    player({ id: "old", is_host: true, joined_at: ago(3_600_000), last_seen_at: ago(600_000) }),
+    player({ id: "late", joined_at: ago(1_800_000), last_seen_at: ago(30_000) }),
+    player({ id: "early", joined_at: ago(3_000_000), last_seen_at: ago(30_000) }),
+    player({ id: "afk", joined_at: ago(3_500_000), last_seen_at: ago(600_000) }),
+  ];
+
+  // Every device computes this from the same roster and gets the same answer,
+  // which is what makes the handover need no coordination and stops it being
+  // raced into two hosts. `afk` joined earliest of the three, and is skipped.
+  assert.equal(pickNewHost(roster, NOW)?.id, "early");
+  assert.equal(
+    pickNewHost([...roster].reverse(), NOW)?.id,
+    "early",
+    "the order the roster arrives in cannot change the answer"
+  );
+
+  // The old host is excluded by their own flag, which is what makes this safe
+  // to call while the crown is merely stale: the answer is always somebody new.
+  assert.notEqual(pickNewHost(roster, NOW)?.id, "old");
+
+  // Nobody left who is still answering, so there is nothing to offer.
+  assert.equal(pickNewHost([roster[0], roster[3]], NOW), null);
+  assert.equal(pickNewHost([], NOW), null);
+});
+
+test("the one seat a round cannot continue without", () => {
+  const giver = player({ id: "cg", last_seen_at: ago(30_000) });
+  const quiet = player({ id: "cg", last_seen_at: ago(600_000) });
+
+  assert.equal(clueGiverIsAway([giver], "cg", NOW), false);
+  assert.equal(clueGiverIsAway([quiet], "cg", NOW), true);
+
+  // Both of these mean the same thing: the seat the round is waiting on is
+  // empty. `rounds.clue_giver_id` is nulled when the player row goes, and a
+  // mid-flight read can see the deletion before it sees the null.
+  assert.equal(clueGiverIsAway([giver], null, NOW), true);
+  assert.equal(clueGiverIsAway([giver], "somebody-else", NOW), true);
+
+  // Deliberately not the same answer as `hostIsAway` gives for an empty room.
+  // A room with nobody in it has no host to replace, but a round with no
+  // clue-giver is stuck whether or not anybody is left to notice.
+  assert.equal(clueGiverIsAway([], "cg", NOW), true);
+});
+
+test("a round can be rescued right up to the reveal, and not after", () => {
+  assert.equal(canSkipRound("clue"), true, "the dead end — the guessers have no button yet");
+  assert.equal(canSkipRound("guess"), true, "kinder than a reveal that can cost two points");
+  assert.equal(canSkipRound("reveal"), false, "already scored; `next` is the way on");
+});
+
+test("the end-of-game card is a fold over reveals the table has already seen", () => {
+  const reveal = (
+    guesses: Array<[string, string, number]>,
+    bets: Array<[string, string, boolean]> = []
+  ): StoredReveal => ({
+    guesses: guesses.map(([player_id, player_name, distance]) => ({
+      player_id,
+      player_name,
+      value: 50,
+      distance,
+    })),
+    bets: bets.map(([player_id, player_name, correct]) => ({
+      player_id,
+      player_name,
+      team_id: "t1",
+      side: "left" as const,
+      correct,
+    })),
+  });
+
+  const rows = foldCalibration([
+    reveal(
+      [
+        ["a", "Ada", 2],
+        ["b", "Bo", 20],
+      ],
+      [["c", "Cy", true]]
+    ),
+    reveal(
+      [
+        ["a", "Ada", 5],
+        ["b", "Bo", 10],
+      ],
+      [["c", "Cy", false]]
+    ),
+  ]);
+
+  const by = (id: string) => rows.find((r) => r.playerId === id)!;
+
+  assert.equal(by("a").markers, 2);
+  assert.equal(by("a").avgError, 3.5);
+  assert.equal(by("a").best, 2);
+  assert.equal(by("a").bullseyes, 2, "5 is inside the band, the same 5 the live scoring uses");
+  assert.equal(by("b").avgError, 15);
+  assert.equal(by("b").best, 10);
+  assert.equal(by("b").bullseyes, 0);
+  assert.equal(by("c").betsPlaced, 2);
+  assert.equal(by("c").betsWon, 1);
+
+  // Most calibrated first, and anybody who never placed a marker goes last
+  // rather than reading as a perfect zero. A round spent giving the clue simply
+  // leaves no marker behind, so it cannot count against an average.
+  assert.deepEqual(
+    rows.map((r) => r.playerId),
+    ["a", "b", "c"]
+  );
+  assert.equal(by("c").markers, 0);
+  assert.equal(by("c").avgError, null);
+  assert.equal(by("c").best, null);
+
+  assert.deepEqual(foldCalibration([]), [], "no revealed rounds is an empty card, not a zeroed one");
+});
+
+test("a reveal written by an older deploy makes a thinner card, not a crash", () => {
+  // `rounds.reveal_detail` is jsonb, so what comes back out is whatever some
+  // past deploy wrote in rather than what today's interface promises. The
+  // winner screen is the payoff and is the worst place for a legacy shape to
+  // surface, so every field here is treated as untrusted.
+  const rows = foldCalibration([
+    null,
+    undefined,
+    {},
+    { guesses: null, bets: null },
+    { guesses: [null, {}, { player_name: "no id at all" }] },
+    { guesses: [{ player_id: "a", player_name: "Ada" }] }, // distance never written
+    { guesses: [{ player_id: "a", player_name: "Ada", distance: "7" as unknown as number }] },
+    { guesses: [{ player_id: "a", player_name: "Ada", distance: -4 }] },
+    { bets: [{ player_id: "b", correct: true }] },
+  ]);
+
+  const ada = rows.find((r) => r.playerId === "a")!;
+  assert.equal(ada.markers, 2, "the two readable distances count; the unwritten one does not");
+  assert.equal(ada.avgError, 5.5, "a stringified number is a number");
+  assert.equal(ada.best, 4, "and a negative distance is still a distance");
+
+  const bo = rows.find((r) => r.playerId === "b")!;
+  assert.equal(bo.name, "", "no name in the blob is an empty name, which the card draws as a dash");
+  assert.equal(bo.betsWon, 1);
+
+  assert.equal(rows.length, 2, "an entry with no player id is not a player");
+});
+
+test("the rescue hatches are stored, counted, and visible on the dashboard", () => {
+  // The failure this is here for is a silent one: an event the client fires but
+  // the ingest allowlist drops is a button nobody can prove anybody pressed.
+  const stored = buildRows({
+    sessionId: "s1",
+    events: [
+      { name: "round_skipped", path: "/room/[code]", props: { round: 3, phase: "clue" }, ts: Date.now() },
+      { name: "host_claimed", path: "/room/[code]", ts: Date.now() },
+    ],
+  });
+  assert.deepEqual(
+    stored.map((r) => r.name),
+    ["round_skipped", "host_claimed"]
+  );
+  assert.deepEqual(stored[0].props, { round: 3, phase: "clue" });
+
+  // And they reach the report. The funnel table can only draw its nine ordered
+  // steps, so without the side list these would be recorded, mirrored to
+  // Mixpanel, and invisible in the app's own dashboard — which is the first
+  // place anybody looks.
+  const ts = new Date().toISOString();
+  const ev = (session_id: string, name: string) => ({
+    session_id,
+    name,
+    room_code: null,
+    path: "/room/[code]",
+    props: {},
+    ts,
+  });
+
+  const summary = foldEvents(
+    [
+      ev("a", "round_skipped"),
+      ev("a", "round_skipped"),
+      ev("b", "round_skipped"),
+      ev("b", "host_claimed"),
+      ev("a", "click"),
+      ev("a", "pointer_heat"),
+    ],
+    "week"
+  );
+
+  const side = (name: string) => summary.side.find((s) => s.name === name);
+  assert.equal(side("round_skipped")?.events, 3);
+  assert.equal(side("round_skipped")?.sessions, 2, "three skips, two people");
+  assert.equal(side("host_claimed")?.events, 1);
+  assert.equal(summary.side[0].name, "round_skipped", "busiest first");
+
+  // `click` has a better table of its own and `pointer_heat` is a payload
+  // rather than a count, so neither belongs in this list.
+  assert.equal(side("click"), undefined);
+  assert.equal(side("pointer_heat"), undefined);
+
+  // Everything else on the allowlist is present at zero rather than absent, so
+  // an event that has never fired reads as zero instead of going missing.
+  assert.equal(side("howto_open")?.events, 0);
+  assert.equal(side("bet_placed")?.events, 0);
+  assert.equal(side("session_end")?.events, 0);
 });

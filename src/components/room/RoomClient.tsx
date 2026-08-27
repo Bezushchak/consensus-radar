@@ -11,9 +11,18 @@ import PlayView from "./PlayView";
 import Winner from "./Winner";
 import * as api from "@/lib/client/api";
 import { clearIdentity, loadIdentity } from "@/lib/client/identity";
-import { startTracking, trackRoom } from "@/lib/client/track";
+import { startTracking, track, trackRoom } from "@/lib/client/track";
 import { useRoom } from "@/lib/client/useRoom";
+import { hostIsAway } from "@/lib/game/engine";
 import type { Identity, RoomState } from "@/lib/types";
+
+/**
+ * How often the host and the clue-giver say hello.
+ *
+ * Comfortably under `AWAY_AFTER_MS` (two minutes), so a single beat lost to a
+ * flaky connection cannot cost somebody the crown.
+ */
+const HEARTBEAT_MS = 45_000;
 
 export type RunAction = (
   action: api.RoomAction,
@@ -83,6 +92,20 @@ export default function RoomClient({ code }: { code: string }) {
     [code, identity, refresh, adoptState]
   );
 
+  /** Pick up hosting from a host who has stopped answering. */
+  const takeOverHosting = useCallback(async () => {
+    const wasHost = state?.room.host_player_id === identity?.playerId;
+    const next = await run("host");
+    // The crown is claimed atomically, so of two people pressing together only
+    // one moves it — and the other is handed the same state back rather than an
+    // error. Counting "the call succeeded" would report two rescues for one
+    // rescued room, so the event fires only on the device that is holding the
+    // crown afterwards and was not holding it before.
+    if (next && !wasHost && identity && next.room.host_player_id === identity.playerId) {
+      track("host_claimed", {});
+    }
+  }, [run, state, identity]);
+
   const me = useMemo(
     () => (identity && state ? state.players.find((p) => p.id === identity.playerId) ?? null : null),
     [identity, state]
@@ -138,6 +161,41 @@ export default function RoomClient({ code }: { code: string }) {
       setSeatNotice(null);
     }
   }, [me]);
+
+  // ---- staying visible ----
+  //
+  // `last_seen_at` moves only when a device makes an *authenticated* request,
+  // and somebody who is merely looking at the room makes none — the state poll
+  // carries no credentials. Left at that, every host would read as absent after
+  // two minutes and the room would offer their crown away underneath them.
+  //
+  // So the two people a room can get stuck waiting on say hello on a timer:
+  // the host, and the clue-giver whose clue everyone is waiting for. Only those
+  // two, and only while the tab is visible, because `/me` writes to `players`
+  // and realtime watches that table — every beat nudges every other tab into
+  // one refetch. Two writers a minute is a cost worth paying; forty would not
+  // be, which is why this is not simply "everyone".
+  //
+  // A phone in a pocket stops beating and eventually reads as away. That is the
+  // right answer rather than a flaw: a host who cannot see the screen cannot
+  // press the buttons only they are allowed to press.
+  const beating = !!me && (me.is_host || state?.round?.clue_giver_id === me.id);
+  useEffect(() => {
+    if (!beating || !identity) return;
+    const beat = () => {
+      if (document.visibilityState !== "visible") return;
+      // Failures are deliberately silent. This is not a source of truth about
+      // the seat — the recheck effect above owns that — it is only a stamp.
+      void api.verifyMembership(code, identity).catch(() => {});
+    };
+    beat();
+    const timer = setInterval(beat, HEARTBEAT_MS);
+    document.addEventListener("visibilitychange", beat);
+    return () => {
+      clearInterval(timer);
+      document.removeEventListener("visibilitychange", beat);
+    };
+  }, [beating, identity, code]);
 
   if (!ready || (!state && !error)) {
     return (
@@ -198,6 +256,29 @@ export default function RoomClient({ code }: { code: string }) {
   return (
     <div className="wrap">
       <AppHeader nav="leaderboard" />
+
+      {/* Start, settings and end-game are host-only, so a host who closed the
+          tab leaves everybody else looking at a room that cannot move. After
+          two minutes of silence the crown is offered to whoever is still here.
+          Deliberately a button and not an automatic promotion: the server
+          cannot tell a host who left from one who is reading the scale out
+          loud, and the people in the room can. */}
+      {!me.is_host && hostIsAway(players, room.host_player_id, Date.now()) ? (
+        <section className="card">
+          <h3 style={{ marginTop: 0 }}>{t("hostAwayTitle")}</h3>
+          <p className="sub">{t("hostAwaySub")}</p>
+          <div className="actions">
+            <button
+              className="btn ghost wide"
+              data-ev="claim-host"
+              disabled={busy}
+              onClick={() => void takeOverHosting()}
+            >
+              {t("claimHostBtn")}
+            </button>
+          </div>
+        </section>
+      ) : null}
 
       {room.status === "lobby" ? (
         <Lobby code={code} state={state} me={me} run={run} busy={busy} />
