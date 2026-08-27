@@ -779,3 +779,155 @@ table.lb tr.mine td:first-child {
   border-radius: 99px;
   background: linear-gradient(90deg, var(--accent), var(--accent2));
 }
+
+/* ---------------------------------------------------------------------
+   The scripted demo on /how-to-play.
+
+   Everything inside .demo-stage is the app's own markup with the app's own
+   classes, which is what stops the tutorial from slowly starting to look like
+   a different product. Only three things are added: a drawn cursor, a text box
+   that can be typed into by nobody, and a pressed state for buttons that can
+   never actually be pressed.
+   --------------------------------------------------------------------- */
+.demo-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin: 16px 0 10px;
+}
+.demo-who {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  background: rgba(12, 20, 46, 0.6);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 7px 14px;
+  font-size: 13px;
+}
+.demo-who .dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  display: inline-block;
+}
+.demo-stage {
+  position: relative;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  background: rgba(8, 12, 28, 0.55);
+  padding: 14px;
+  min-height: 540px;
+}
+.demo-screens {
+  pointer-events: none;
+}
+/* The mock cards already sit inside a card, so they drop the outer shadow. */
+.demo-stage .card {
+  box-shadow: none;
+  margin: 0;
+  border-radius: 16px;
+}
+.demo-stage .card + .card {
+  margin-top: 12px;
+}
+.demo-caption {
+  min-height: 46px;
+  margin: 12px 0 0;
+  text-align: center;
+  font-size: 15px;
+  line-height: 1.45;
+}
+
+.demo-cursor {
+  position: absolute;
+  left: 0;
+  top: 0;
+  z-index: 20;
+  pointer-events: none;
+  filter: drop-shadow(0 4px 9px rgba(0, 0, 0, 0.6));
+  transition-property: transform;
+  transition-timing-function: cubic-bezier(0.33, 0.02, 0.28, 1);
+  will-change: transform;
+}
+.demo-cursor svg {
+  display: block;
+  transform: translate(-4px, -3px);
+  transition: transform 120ms ease;
+}
+.demo-cursor.down svg {
+  transform: translate(-4px, -3px) scale(0.82);
+}
+/* The tap ring: the only way a synthetic click reads as a click. */
+.demo-cursor.down::after {
+  content: "";
+  position: absolute;
+  left: -15px;
+  top: -15px;
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  border: 2px solid var(--accent);
+  opacity: 0.85;
+}
+
+.demo-stage .btn.pressed {
+  transform: translateY(1px);
+  filter: brightness(1.18);
+}
+.demo-stage .teampick button.pressed {
+  filter: brightness(1.18);
+}
+/* Same box as input[type="text"], with a caret the script can blink. */
+.demo-stage .fakeinput {
+  width: 100%;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  color: var(--ink);
+  padding: 12px 14px;
+  border-radius: 12px;
+  font-size: 15px;
+  min-height: 45px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.demo-stage .fakeinput.focus {
+  border-color: var(--accent2);
+}
+.demo-stage .fakeinput .ph {
+  color: #6b76a8;
+}
+.demo-stage .fakeinput.code {
+  text-transform: uppercase;
+  letter-spacing: 6px;
+  font-weight: 800;
+  font-size: 22px;
+  text-align: center;
+  min-height: 56px;
+}
+.demo-stage .fakeinput .caret {
+  display: inline-block;
+  width: 2px;
+  height: 1.05em;
+  margin-left: 1px;
+  vertical-align: -2px;
+  background: var(--accent);
+  animation: caret 1s steps(1, end) infinite;
+}
+@keyframes caret {
+  50% {
+    opacity: 0;
+  }
+}
+@media (max-width: 700px) {
+  .demo-stage {
+    padding: 8px;
+    min-height: 580px;
+  }
+  .demo-stage .card {
+    padding: 16px;
+  }
+}

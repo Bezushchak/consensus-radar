@@ -3,7 +3,11 @@
 import Link from "next/link";
 import { useLang } from "./LangProvider";
 
-export default function AppHeader({ nav }: { nav?: "leaderboard" | "home" | "none" }) {
+export default function AppHeader({
+  nav,
+}: {
+  nav?: "leaderboard" | "home" | "none" | "howto";
+}) {
   const { lang, setLang, t } = useLang();
 
   return (
@@ -28,7 +32,15 @@ export default function AppHeader({ nav }: { nav?: "leaderboard" | "home" | "non
             🏆 {t("leaderboardLink")}
           </Link>
         ) : null}
-        {nav === "home" ? (
+        {/* The tutorial is offered from the front door and from the join gate,
+            but not from inside a live room: there, the link would walk somebody
+            out of a round they are in the middle of. */}
+        {nav === "leaderboard" || nav === "home" ? (
+          <Link href="/how-to-play" className="pill">
+            ❓ {t("howToLink")}
+          </Link>
+        ) : null}
+        {nav === "home" || nav === "howto" ? (
           <Link href="/" className="pill">
             ← {t("homeLink")}
           </Link>

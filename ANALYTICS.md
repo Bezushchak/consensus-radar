@@ -50,12 +50,13 @@ Nine funnel events, in the order a player meets them:
 | `round_revealed` | The reveal appears | **every device watching** | `round`, `points`, `distance` (`-1` when unknown) |
 | `game_finished` | The winner screen appears | every device | `rounds`, `score` |
 
-And eight that are useful but never gate a later step:
+And nine that are useful but never gate a later step:
 
 | Event | Props | Note |
 | --- | --- | --- |
 | `join_open` | `players` | Saw the join screen. May or may not join. |
 | `leaderboard_open` | — | Once per session per page. |
+| `howto_open` | — | Opened `/how-to-play`. Once per session. Not a funnel step on purpose: reading the rules is not on the way to playing, so a step nobody has to take would read as a 90% drop-off. |
 | `lang_switched` | `to` | |
 | `bet_placed` | `side`, `round`, `markers` | Only when side bets are enabled for the room. `markers` is how many of the guessing team's markers were on screen when the call was made. |
 | `click` | `target`, `tag` | `target` is the control's `data-ev` label; see below. |
@@ -69,9 +70,11 @@ exist, by screen: `resume-room`, `create-room`, `join-by-code` on the front page
 `pick-team`, `join-room` on the join gate; `copy-link`, `switch-team`,
 `save-settings`, `start-game` in the lobby; `send-clue`, `submit-guess`,
 `change-guess`, `bet-left`, `bet-right`, `reveal-now`, `next-round` in play;
-`play-again`, `winner-leaderboard` on the winner screen; and `lb-board-<teams |
+`play-again`, `winner-leaderboard` on the winner screen; `lb-board-<teams |
 rounds | players | scales>` and `lb-period-<all | week | month>` on the
-leaderboard. The guess button reports `submit-guess` the first time and
+leaderboard; and `demo-play`, `demo-pause`, `demo-restart` on the tutorial,
+which is how you tell somebody who watched the demo through from somebody who
+stopped it. The guess button reports `submit-guess` the first time and
 `change-guess` when a marker is being replaced, which is the same information
 `guess_locked.changed` carries and a useful cross-check on it. An unlabelled but
 interactive click is recorded as `(unlabelled)` with its tag name, so dead ends
@@ -200,6 +203,15 @@ converts noticeably worse is a mobile layout bug.
 
 Breakdown by `lang` tells you which dictionary to keep polished. `lang_switched`
 with `to` tells you whether the default is wrong.
+
+`howto_open` as a share of `app_open` is how often the front page fails to
+explain itself. It is not a number to minimise — somebody reading the rules
+before hosting is a good outcome — but the pair worth watching is `howto_open`
+against `room_created` in the same session: people who read the tutorial and
+then start a game mean it is doing its job, and a session that opens the
+tutorial and stops there means the game looks like too much work. `click` where
+`target = demo-restart` says a step needs watching twice, which is the closest
+thing here to "this rule is not clear".
 
 `error_shown`, broken down by `where` and then `message`, is a free bug report
 queue ordered by how many people hit it. This should be checked before any other

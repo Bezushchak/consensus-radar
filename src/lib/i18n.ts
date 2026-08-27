@@ -186,6 +186,112 @@ export const STRINGS: Dict = {
     ua: "Два різних гравці з однаковим ім'ям — це два різних рядки; щоб їх було видно, до імені додається короткий код пристрою (напр. «Dmytro · K7QM»). Ваш рядок підсвічено.",
     en: "Two different people with the same name are two different rows; to tell them apart each gets a short device code next to the name (e.g. \"Dmytro · K7QM\"). Your own row is highlighted.",
   },
+
+  // ---------------- how to play ----------------
+  howToLink: { ua: "Як грати", en: "How to play" },
+  howToTitle: { ua: "Як грати", en: "How to play" },
+  howToSub: {
+    ua: "Хвилинна демонстрація: гравці-статисти проходять весь шлях — від коду кімнати до розкриття. Нижче ті самі правила словами.",
+    en: "A one-minute demo: stand-in players walk the whole path, from room code to the reveal. The same rules in words are underneath.",
+  },
+  howToRulesTitle: { ua: "Правила коротко", en: "The rules in short" },
+  howToSetupRules: {
+    ua: "Кімната живе за кодом із чотирьох символів: хост створює її, решта заходять зі своїх телефонів — застосунок нічого не встановлює й нікого не реєструє. У команді потрібні щонайменше двоє, бо той, хто дає clue, маркер не ставить. Грати можна до 15–30 очок або без ліміту; результат завершеної гри осідає в лідерборді.",
+    en: "A room lives behind a four-character code: the host creates it and everyone else joins from their own phone — nothing to install, nobody to sign up. A team needs at least two people, because the clue-giver doesn't place a marker. Games run to 15–30 points or endlessly, and a finished game's result lands on the leaderboard.",
+  },
+  howToGoal: {
+    ua: "Раунд починається зі шкали між двома полюсами і таємної точки на ній, яку бачить лише той, хто дає clue. Він описує її словами; його команда ставить маркери, не бачачи маркерів одне одного, а фінальна позиція команди — середнє з них. Чим ближче до точки, тим більше очок: похибка до 5 — п'ять очок, до 12 — три, далі нуль, а протилежний бік шкали коштує −2.",
+    en: "A round opens with a scale between two poles and a secret spot on it that only the clue-giver sees. They describe it in words; their team places markers without seeing each other's, and the team's final position is the average of them. The closer to the spot, the more points: within 5 scores five, within 12 scores three, further out scores nothing, and the opposite end of the scale costs −2.",
+  },
+  howToClueRules: {
+    ua: "У clue не можна числа — ні цифрами («50%»), ні словами («половина», «сорок»), ні склеєними всередині слова. Слів, що несуть зміст, максимум шість; артиклі, прийменники та сполучники безкоштовні. Ті самі правила працюють і в браузері, і на сервері, тож форма ніколи не пропустить того, що сервер відхилить.",
+    en: "A clue may not contain numbers — not as digits (\"50%\"), not spelled out (\"half\", \"forty\"), not glued inside a word. At most six words carry meaning; articles, prepositions and conjunctions are free. The same rules run in the browser and on the server, so the form never accepts something the server would refuse.",
+  },
+  howToBetsRules: {
+    ua: "Поки одна команда відгадує, інші бачать clue і маркери, що з'являються на радарі, та ставлять на бік: маркер стане лівіше чи правіше від таємної точки? Якщо більшість команди вгадала — плюс очко. А от гравці команди, що відгадує, маркерів одне одного до розкриття не бачать: інакше раунд міряв би згоду, а не калібрування.",
+    en: "While one team guesses, the others see the clue and watch the markers appear on the dial, then call the side: will the marker land left or right of the secret spot? If most of the team calls it right, they get a point. The guessing team, though, cannot see each other's markers before the reveal — otherwise the round would measure agreement rather than calibration.",
+  },
+
+  // The demo player's own furniture.
+  demoPlay: { ua: "Продовжити", en: "Play" },
+  demoPause: { ua: "Пауза", en: "Pause" },
+  demoRestart: { ua: "З початку", en: "Restart" },
+  demoNotReal: {
+    ua: "Це записана демонстрація — кнопки всередині рамки не працюють, вона грає сама.",
+    en: "This is a scripted demo — the controls inside the frame don't work, it plays itself.",
+  },
+  demoHostNote: {
+    ua: "Хост натомість тисне «Створити кімнату» — тут ми заходимо в готову.",
+    en: "The host presses \"Create room\" instead — here we're joining one that exists.",
+  },
+  demoRoleNew: { ua: "приєднується", en: "joining" },
+  demoRoleClue: { ua: "дає clue", en: "clue-giver" },
+  demoRoleGuess: { ua: "відгадує", en: "guessing" },
+  demoRoleWatch: { ua: "ставить", en: "betting" },
+
+  // Narration. One sentence per beat: it has to be readable in the time the
+  // cursor takes to get to the next thing.
+  demoJoin1: {
+    ua: "Хост диктує код із чотирьох символів. Кожен вводить його на своєму телефоні.",
+    en: "The host reads out a four-character code. Everyone types it on their own phone.",
+  },
+  demoJoin2: {
+    ua: "Спершу ім'я, яким вас бачитимуть інші.",
+    en: "First, the name everyone else will see.",
+  },
+  demoJoin3: {
+    ua: "Застосунок садить у меншу команду — пересісти можна тут же. Двоє в команді — мінімум: той, хто дає clue, маркер не ставить.",
+    en: "The app seats you in the smaller team — you can move right here. Two per team is the minimum: the clue-giver doesn't place a marker.",
+  },
+  demoLobby1: {
+    ua: "У лоббі видно всіх, хто зайшов, і хто в якій команді.",
+    en: "The lobby shows everyone who's in, and which team they're on.",
+  },
+  demoLobby2: {
+    ua: "Гру починає хост — тож далі дивимось на його телефон.",
+    en: "The host starts the game — so we switch to their phone.",
+  },
+  demoClue1: {
+    ua: "Раунд починається зі шкали і таємної точки. Її бачить лише той, хто дає clue.",
+    en: "A round opens with a scale and a secret spot. Only the clue-giver sees it.",
+  },
+  demoClue2: {
+    ua: "Тепер clue — до шести слів, які наведуть команду на цю точку.",
+    en: "Now the clue — up to six words that point the team at that spot.",
+  },
+  demoClue3: {
+    ua: "Числа заборонені: і цифрами, і словами. Кнопка просто не працює.",
+    en: "Numbers are out, as digits and as words. The button simply stays dead.",
+  },
+  demoClue4: { ua: "Ось так краще. Жодного числа.", en: "Better. Not a number in sight." },
+  demoGuess1: {
+    ua: "Тепер телефон Dana. Вона бачить clue, але не таємну точку.",
+    en: "Now Dana's phone. She sees the clue, but not the secret spot.",
+  },
+  demoGuess2: {
+    ua: "Кожен ставить свій маркер окремо. Відповідь команди — середнє з них.",
+    en: "Everyone places their own marker. The team's answer is the average of them.",
+  },
+  demoWatch1: {
+    ua: "А це телефон іншої команди: вони бачать і clue, і маркери, що з'являються.",
+    en: "And this is the other team's phone: they see the clue and the markers appearing.",
+  },
+  demoWatch2: {
+    ua: "Їхня ставка — маркер стане лівіше чи правіше від таємної точки?",
+    en: "Their call: will the marker land left or right of the secret spot?",
+  },
+  demoReveal1: {
+    ua: "Розкриття. Середнє команди — {marker}, точка була на {target}: похибка мала, {points} очки.",
+    en: "The reveal. The team averaged {marker}, the spot was at {target}: a small miss, {points} points.",
+  },
+  demoReveal2: {
+    ua: "Хто куди ставив — видно всім. Ставки теж: більшість «Шуму» вгадала бік, тож і їм очко.",
+    en: "Who placed what is public. So are the bets: most of Noise called the side, so they score too.",
+  },
+  demoNext: {
+    ua: "Далі новий раунд: інша шкала, clue дає інша людина. І так до цілі.",
+    en: "Then a new round: another scale, someone else gives the clue. Repeat until the target.",
+  },
 };
 
 export function t(lang: Lang, key: string, vars?: Record<string, string | number>): string {

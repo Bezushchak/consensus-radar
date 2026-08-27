@@ -259,7 +259,8 @@ export default function HomePage() {
       </div>
 
       <div className="footer">
-        Consensus Radar · {t("footer")} · <Link href="/leaderboard">{t("leaderboardLink")}</Link>
+        Consensus Radar · {t("footer")} · <Link href="/how-to-play">{t("howToLink")}</Link> ·{" "}
+        <Link href="/leaderboard">{t("leaderboardLink")}</Link>
       </div>
     </div>
   );
