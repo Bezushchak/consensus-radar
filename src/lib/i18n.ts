@@ -59,6 +59,35 @@ export const STRINGS: Dict = {
   settingsSaved: { ua: "Налаштування збережено.", en: "Settings saved." },
   leaveBtn: { ua: "Вийти з кімнати", en: "Leave room" },
 
+  // ---- phase clocks (lobby pickers) ----
+  timersLabel: { ua: "Таймери", en: "Time limits" },
+  timersSub: {
+    ua: "Скільки часу дається на хід. Без ліміту — як було завжди: ніхто нікого не підганяє.",
+    en: "How long each turn gets. Unlimited plays exactly as it always has — nobody is rushed.",
+  },
+  clueTimerLabel: { ua: "На clue (радист)", en: "For the clue (radio operator)" },
+  guessTimerLabel: { ua: "На маркери (команда)", en: "For the markers (the team)" },
+  timerOff: { ua: "Без ліміту", en: "Unlimited" },
+  timerMin: { ua: "{n} хв", en: "{n} min" },
+  timerRules: {
+    ua: "Коли час на маркери спливає, за тих, хто не встиг, ставиться 50% — раунд зараховується як звичайний. Коли спливає час на clue, раунд закривається з нулем і хід переходить наступній команді.",
+    en: "When the marker clock runs out, anyone who did not move gets 50% placed for them and the round scores as normal. When the clue clock runs out, the round closes for zero and the turn passes to the next team.",
+  },
+
+  // ---- the countdown itself ----
+  timerLeftClue: { ua: "Час на clue", en: "Clue time" },
+  timerLeftGuess: { ua: "Час на маркери", en: "Marker time" },
+  timerHurry: { ua: "Час майже вийшов!", en: "Almost out of time!" },
+  timedOutClueTitle: { ua: "Час на clue вийшов", en: "The clue clock ran out" },
+  timedOutClueSub: {
+    ua: "Clue так і не з'явився, тому раунд закритий з нулем. Хід переходить наступній команді.",
+    en: "No clue arrived, so the round is closed for zero. The turn passes to the next team.",
+  },
+  timedOutGuess: {
+    ua: "Час вийшов — за тих, хто не встиг, поставлено 50%.",
+    en: "Time ran out — 50% was placed for anyone who had not moved.",
+  },
+
   // ---- clue phase ----
   clueTitle: { ua: "Ваша таємна точка", en: "Your secret spot" },
   clueSub: { ua: "Дайте clue, що наведе команду на цю точку. Не називайте число!", en: "Give a clue that points your team to this spot. Don't say a number!" },

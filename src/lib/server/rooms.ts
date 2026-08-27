@@ -5,6 +5,7 @@
 
 import { admin } from "../supabase/admin";
 import {
+  AUTO_MARKER,
   BET_POINTS,
   MAX_PLAYERS,
   MIN_TEAMS,
@@ -13,15 +14,18 @@ import {
   betIsCorrect,
   canSkipRound,
   cleanName,
+  cleanTimerSeconds,
   cleanUid,
   clampSlider,
   clueGiverIsAway,
+  deadlineFor,
   firstTeamIndexWithPlayers,
   foldCalibration,
   generateRoomCode,
   hostIsAway,
   leader,
   makeTeams,
+  mayExpire,
   nextTeamIndex,
   pickClueGiver,
   pickNewHost,
@@ -45,6 +49,7 @@ import type {
   Identity,
   Lang,
   LiveGuess,
+  Phase,
   Player,
   RevealDetail,
   Room,
@@ -114,6 +119,28 @@ function describe(message: string): string {
     : message;
 }
 
+/**
+ * A `phase_deadline` patch that stays silent on a database without the column.
+ *
+ * `insertTolerant` covers inserts by retrying; an UPDATE has no such second
+ * chance, and naming a column PostgREST has never heard of fails the whole
+ * statement — which would mean an un-migrated database could no longer take a
+ * clue. So the field is only named when it has something to say: a real
+ * deadline to set, or a stale one to clear. On a database without the column
+ * the room reads back with no timer settings and the round with no deadline, so
+ * both are false and the update goes out exactly as it did before timers
+ * existed. Clearing matters as much as setting: a room that times the clue but
+ * not the guess must have the old instant wiped on the way through, or the
+ * guessers inherit a deadline that has already passed.
+ */
+function deadlinePatch(
+  round: Pick<Round, "phase_deadline">,
+  next: string | null
+): { phase_deadline?: string | null } {
+  const current = round.phase_deadline ?? null;
+  return next === null && current === null ? {} : { phase_deadline: next };
+}
+
 // ---------------------------------------------------------------------
 // Reads
 // ---------------------------------------------------------------------
@@ -165,7 +192,18 @@ export async function getState(code: string): Promise<RoomState> {
   // another's, so they never leave the server.
   const publicPlayers = players.map((p) => ({ ...p, player_uid: null }));
 
-  return { room, players: publicPlayers, round, guesses, bets };
+  // The server's clock travels with the payload so the countdown can correct
+  // for a phone that is wrong. Cheap — it is read here, not queried — and it is
+  // the difference between a timer that agrees across a table and one that fires
+  // early on whichever device has the worst clock.
+  return {
+    room,
+    players: publicPlayers,
+    round,
+    guesses,
+    bets,
+    now: new Date().toISOString(),
+  };
 }
 
 /**
@@ -444,7 +482,15 @@ export async function updateSettings(
   code: string,
   playerId: string,
   token: string,
-  patch: { categories?: unknown; goal?: unknown; betsEnabled?: unknown; lang?: unknown; teamNames?: unknown }
+  patch: {
+    categories?: unknown;
+    goal?: unknown;
+    betsEnabled?: unknown;
+    lang?: unknown;
+    teamNames?: unknown;
+    clueSeconds?: unknown;
+    guessSeconds?: unknown;
+  }
 ) {
   const { room, player } = await authenticate(code, playerId, token);
   requireHost(room, player);
@@ -463,6 +509,13 @@ export async function updateSettings(
   }
   if (patch.betsEnabled !== undefined) update.bets_enabled = patch.betsEnabled !== false;
   if (patch.lang !== undefined) update.lang = patch.lang === "en" ? "en" : "ua";
+
+  // Clamped to the offered set rather than validated: anything unrecognised
+  // becomes "no clock", which is the only wrong answer that cannot strand a
+  // table waiting on a deadline it never asked for. The clamp lives here and not
+  // in a check constraint because the column had to be addable to a live table.
+  if (patch.clueSeconds !== undefined) update.clue_seconds = cleanTimerSeconds(patch.clueSeconds);
+  if (patch.guessSeconds !== undefined) update.guess_seconds = cleanTimerSeconds(patch.guessSeconds);
 
   if (patch.teamNames !== undefined && Array.isArray(patch.teamNames)) {
     const names = patch.teamNames as unknown[];
@@ -559,8 +612,14 @@ async function openRound(room: Room): Promise<Round> {
       scale_left_ua: scale.l.ua,
       scale_right_ua: scale.r.ua,
       phase: "clue",
+      // The clue clock starts the moment the round exists, not when the
+      // clue-giver first looks at it: there is no "opened the screen" event to
+      // hang it on, and a deadline that waited for one would never arrive on a
+      // phone that stayed in a pocket — which is the case the clock is for.
+      // Null when the room has no clue limit, which is the default.
+      phase_deadline: deadlineFor(room, "clue", Date.now()),
     },
-    ["scale_left_ua", "scale_right_ua"]
+    ["scale_left_ua", "scale_right_ua", "phase_deadline"]
   );
 
   const { error: secretErr } = await admin()
@@ -690,7 +749,15 @@ export async function submitClue(code: string, playerId: string, token: string, 
 
   const { error } = await admin()
     .from("rounds")
-    .update({ clue: text, phase: "guess" })
+    .update({
+      clue: text,
+      phase: "guess",
+      // The guess clock starts now, not when the round opened: the guessers
+      // could not have begun before the clue existed, and a deadline measured
+      // from the round's birth would hand a slow clue-giver's leftovers — or
+      // nothing at all — to the people who had no way to act sooner.
+      ...deadlinePatch(round, deadlineFor(room, "guess", Date.now())),
+    })
     .eq("id", round.id)
     .eq("phase", "clue");
   if (error) throw new ApiError(500, error.message);
@@ -802,8 +869,15 @@ export async function forceReveal(code: string, playerId: string, token: string)
   return getState(code);
 }
 
-/** Scores the round, updates the scoreboard, persists stats. Idempotent. */
-async function revealRound(room: Room, round: Round): Promise<void> {
+/**
+ * Scores the round, updates the scoreboard, persists stats. Idempotent.
+ *
+ * `timedOut` only annotates: it is recorded in the detail so the reveal card can
+ * say that some of the markers were placed by the clock rather than by people,
+ * and it changes nothing about how the round is scored. That is the whole point
+ * of filling the missing markers in — the round is played out, not written off.
+ */
+async function revealRound(room: Room, round: Round, timedOut?: Phase): Promise<void> {
   // Claim the reveal: only one concurrent request wins this update.
   const { data: claimed, error: claimErr } = await admin()
     .from("rounds")
@@ -888,7 +962,15 @@ async function revealRound(room: Room, round: Round): Promise<void> {
     ...team,
     score: team.score + (teamPoints[team.id] ?? 0),
   }));
-  const detail: RevealDetail = { guesses: detailGuesses, bets: detailBets, team_points: teamPoints };
+  const detail: RevealDetail = {
+    guesses: detailGuesses,
+    bets: detailBets,
+    team_points: teamPoints,
+    // Spread rather than set to undefined: this row is serialised to jsonb, and
+    // an explicit `"timed_out": null` on every ordinary round would be a field
+    // the reveal card has to learn to ignore.
+    ...(timedOut ? { timed_out: timedOut } : {}),
+  };
 
   const { error: roundErr } = await admin()
     .from("rounds")
@@ -899,6 +981,9 @@ async function revealRound(room: Room, round: Round): Promise<void> {
       revealed_target: target,
       reveal_detail: detail,
       revealed_at: new Date().toISOString(),
+      // The reveal is never timed, so the clock goes away here rather than
+      // being left to count into the negative behind the result card.
+      ...deadlinePatch(round, null),
     })
     .eq("id", round.id);
   if (roundErr) throw new ApiError(500, roundErr.message);
@@ -1065,6 +1150,204 @@ export async function skipRound(code: string, playerId: string, token: string) {
 
   await openRound(await getRoom(code));
   return getState(code);
+}
+
+/**
+ * The clock ran out. Called by whichever device notices first.
+ *
+ * Open to any player in the room on purpose. The countdown is public — everyone
+ * watches the same instant arrive — and gating this on the host would mean a
+ * room whose host has a locked phone sits at 0:00 forever, which is the exact
+ * situation the clock exists to end. Nothing is trusted from the caller: the
+ * deadline is re-read from the database and re-checked against the server's own
+ * clock, so a device with a fast clock, an old tab or a hand-rolled request
+ * cannot cut a phase short. Every device in the room will call this within a
+ * second of each other; the atomic claim means one does the work and the rest
+ * are handed the resulting state, exactly as with skip.
+ *
+ * The two phases end in deliberately different ways, because what is lost is
+ * different. In the guess phase the round is playable — the clue is down, people
+ * simply have not all moved — so the missing markers are filled in at dead
+ * centre and the round scores normally. In the clue phase there is nothing to
+ * aim at, so the round is revealed for nothing: no markers, no points, and the
+ * turn moves on. Revealed rather than deleted, which is what separates this from
+ * `skipRound`: a clue-giver who lets the clock run out costs their team a
+ * counted round, whereas a skip is a rescue and is meant to leave no trace.
+ */
+export async function expireRound(code: string, playerId: string, token: string) {
+  const { room } = await authenticate(code, playerId, token);
+  if (room.status !== "playing") return getState(code);
+
+  const round = await requireCurrentRound(room);
+  const deadline = round.phase_deadline;
+
+  // The server's clock decides, with the same grace the clients allow
+  // themselves. Anything early is not an error — a phone a second or two ahead
+  // is normal — it is simply not time yet.
+  if (!mayExpire(deadline, Date.now())) return getState(code);
+
+  if (round.phase === "guess") {
+    // Claimed by taking the deadline away: whoever nulls it first owns the
+    // expiry, and the callers a moment behind match no row and do nothing. The
+    // phase is left alone until the markers are in, so a player who submits for
+    // real in that sliver still lands a genuine marker instead of hitting a
+    // round that has already moved on.
+    const { data: claimed, error: claimErr } = await admin()
+      .from("rounds")
+      .update({ phase_deadline: null })
+      .eq("id", round.id)
+      .eq("phase", "guess")
+      .eq("phase_deadline", deadline)
+      .select("id")
+      .maybeSingle();
+    if (claimErr) throw new ApiError(500, describe(claimErr.message));
+    if (!claimed) return getState(code);
+
+    await fillMissingGuesses(room, round);
+    // Reveals through the ordinary path, so the score, the side bets, the
+    // durable stats and the goal check all behave as they would have if
+    // everybody had moved in time — which is the point of filling the markers
+    // in rather than scoring the round as a loss.
+    await revealRound(room, { ...round, phase_deadline: null }, "guess");
+    return getState(code);
+  }
+
+  if (round.phase === "clue") {
+    await revealTimedOutClue(room, round, deadline);
+    return getState(code);
+  }
+
+  return getState(code);
+}
+
+/**
+ * Puts a marker at dead centre for every guesser who never moved one.
+ *
+ * Centre rather than a miss: 50 is a real answer that can score, and on a scale
+ * whose secret happens to sit near the middle it will. That is the intended
+ * feel — the clock costs you the chance to think, not the round. Written with
+ * ON CONFLICT DO NOTHING so a marker that landed for real in the same instant
+ * is never overwritten by the automatic one.
+ */
+async function fillMissingGuesses(room: Room, round: Round): Promise<void> {
+  const players = await getPlayers(room.id);
+  const guessers = players.filter(
+    (p) => p.team_id === round.team_id && p.id !== round.clue_giver_id
+  );
+  if (guessers.length === 0) return;
+
+  const { data: existing, error: readErr } = await admin()
+    .from("guesses")
+    .select("player_id")
+    .eq("round_id", round.id);
+  if (readErr) throw new ApiError(500, describe(readErr.message));
+
+  const already = new Set((existing ?? []).map((g: { player_id: string }) => g.player_id));
+  const missing = guessers.filter((p) => !already.has(p.id));
+  if (missing.length === 0) return;
+
+  const now = new Date().toISOString();
+  const { data: inserted, error: insErr } = await admin()
+    .from("guesses")
+    .upsert(
+      missing.map((p) => ({
+        round_id: round.id,
+        room_id: room.id,
+        player_id: p.id,
+        player_name: p.name,
+        team_id: p.team_id,
+        submitted_at: now,
+      })),
+      { onConflict: "round_id,player_id", ignoreDuplicates: true }
+    )
+    .select("id");
+  if (insErr) throw new ApiError(500, describe(insErr.message));
+
+  const rows = (inserted ?? []) as { id: string }[];
+  if (rows.length === 0) return;
+
+  // The value lives in its own table, unreadable by the watching teams. A guess
+  // row with no value is dropped at reveal rather than drawn at zero, so this
+  // write is what makes the automatic markers count at all.
+  const { error: valErr } = await admin()
+    .from("guess_values")
+    .upsert(
+      rows.map((r) => ({ guess_id: r.id, value: AUTO_MARKER })),
+      { onConflict: "guess_id" }
+    );
+  if (valErr) throw new ApiError(500, describe(valErr.message));
+}
+
+/**
+ * Reveals a round whose clue never arrived, scoring nothing.
+ *
+ * Its own path rather than a flag through `revealRound`, which refuses a round
+ * with no clue and is right to: there is no marker, no average and no distance,
+ * so every number it computes would be invented. What is written instead is a
+ * round that plainly says what happened — zero points for everybody and
+ * `timed_out: "clue"` in the detail, which is what the reveal card reads to
+ * explain itself.
+ *
+ * No `player_round_stats` rows are written. The scoreboard consequence is the
+ * penalty; the personal stats measure how close people aim, and nobody aimed at
+ * anything here, so a row would only drag an average around with a number that
+ * describes no attempt.
+ */
+async function revealTimedOutClue(
+  room: Room,
+  round: Round,
+  deadline: string | null
+): Promise<void> {
+  // Claimed straight into the reveal, unlike the guess branch: here the phase
+  // itself is the door that has to shut, because `submitClue` only accepts a
+  // round still in `clue` and a clue arriving after this point would be scored
+  // against a round that has already been written off.
+  const { data: claimed, error: claimErr } = await admin()
+    .from("rounds")
+    .update({ phase: "reveal", phase_deadline: null })
+    .eq("id", round.id)
+    .eq("phase", "clue")
+    .eq("phase_deadline", deadline)
+    .select("id")
+    .maybeSingle();
+  if (claimErr) throw new ApiError(500, describe(claimErr.message));
+  if (!claimed) return;
+
+  const { data: secret } = await admin()
+    .from("round_secrets")
+    .select("target")
+    .eq("round_id", round.id)
+    .maybeSingle();
+
+  const teamPoints: Record<string, number> = {};
+  for (const team of room.teams) teamPoints[team.id] = 0;
+
+  const detail: RevealDetail = {
+    guesses: [],
+    bets: [],
+    team_points: teamPoints,
+    timed_out: "clue",
+  };
+
+  const { error } = await admin()
+    .from("rounds")
+    .update({
+      marker: null,
+      distance: null,
+      points: 0,
+      // The secret is shown anyway. The round is over and nobody can act on it,
+      // and seeing where it sat is the only thing the table gets out of a turn
+      // that went nowhere.
+      revealed_target: (secret?.target as number | undefined) ?? null,
+      reveal_detail: detail,
+      revealed_at: new Date().toISOString(),
+    })
+    .eq("id", round.id);
+  if (error) throw new ApiError(500, describe(error.message));
+
+  // The scoreboard is untouched — no team gained or lost — but the room has to
+  // look changed, or the pollers will not come back for the reveal.
+  await touch(room.id);
 }
 
 /**

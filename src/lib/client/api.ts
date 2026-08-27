@@ -142,6 +142,7 @@ export type RoomAction =
   | "reveal"
   | "next"
   | "skip"
+  | "expire"
   | "again"
   | "end"
   | "host"

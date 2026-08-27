@@ -51,6 +51,7 @@ const SIDE_LABELS: Record<string, string> = {
   bet_placed: "Placed a bet on the other team",
   round_skipped: "Gave up on a round — nothing scored",
   host_claimed: "Took over from a host who went quiet",
+  timer_expired: "Ran out of time on a phase",
   error_shown: "Saw an error message",
   session_end: "Left (last event of a session)",
 };

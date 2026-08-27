@@ -1,13 +1,14 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import Gauge from "@/components/Gauge";
 import { useLang } from "@/components/LangProvider";
 import Poles from "@/components/Poles";
 import * as api from "@/lib/client/api";
 import { track } from "@/lib/client/track";
 import { MAX_CLUE_WORDS, clueErrorKey, validateClue, type ClueReason } from "@/lib/game/clue";
-import { CLUE_MAX_LEN, clueGiverIsAway, scoreFor } from "@/lib/game/engine";
+import { CLUE_MAX_LEN, clueGiverIsAway, phaseSeconds, scoreFor } from "@/lib/game/engine";
+import PhaseTimer from "./PhaseTimer";
 import type { RunAction } from "./RoomClient";
 import type { Identity, LiveGuess, Player, RoomState, Round } from "@/lib/types";
 
@@ -19,6 +20,7 @@ export default function PlayView({
   round,
   run,
   busy,
+  skewMs,
 }: {
   code: string;
   state: RoomState;
@@ -27,6 +29,8 @@ export default function PlayView({
   round: Round;
   run: RunAction;
   busy: boolean;
+  /** Server clock minus this device's, for the countdown. */
+  skewMs: number;
 }) {
   const { t, lang } = useLang();
   const { room, players, guesses, bets } = state;
@@ -161,6 +165,48 @@ export default function PlayView({
     amClueGiver ||
     (round.phase === "clue" && clueGiverIsAway(players, round.clue_giver_id, Date.now()));
 
+  // ---- the phase clock ----
+  //
+  // Rendered on every screen a running round can show, so the whole table
+  // watches one number rather than each person guessing at how long is left.
+  // `onClock` is the narrower question of who still owes an action, and it is
+  // the only thing that decides whether this device makes a noise: the
+  // clue-giver while the clue is outstanding, and during the guess phase
+  // whoever has not locked a marker or, on a watching team, not placed their
+  // bet. Someone who has already acted has nothing to hurry for.
+  const iOweAnAction =
+    round.phase === "clue"
+      ? amClueGiver
+      : amGuesser
+        ? !myGuess
+        : !amOnActiveTeam && room.bets_enabled
+          ? !myBet
+          : false;
+
+  async function expire() {
+    const res = await run("expire");
+    // Every device in the room reports the same expiry, and the server hands
+    // the losers of that race the same fresh state as the winner — so counting
+    // "the call returned" would multiply one expiry by the size of the table.
+    // A phase that has actually ended is either past `reveal` or holding a
+    // different deadline, and only the device that caused that counts it.
+    if (res && (res.round?.phase !== round.phase || res.round?.id !== round.id)) {
+      track("timer_expired", { round: round.round_no, phase: round.phase });
+    }
+  }
+
+  const clock =
+    round.phase === "reveal" ? null : (
+      <PhaseTimer
+        deadline={round.phase_deadline}
+        total={phaseSeconds(room, round.phase)}
+        skewMs={skewMs}
+        label={t(round.phase === "clue" ? "timerLeftClue" : "timerLeftGuess")}
+        onClock={iOweAnAction}
+        onExpire={expire}
+      />
+    );
+
   async function skip() {
     if (!window.confirm(t("skipConfirm"))) return;
     const res = await run("skip");
@@ -194,6 +240,7 @@ export default function PlayView({
           run={run}
           busy={busy}
           onSkip={skip}
+          clock={clock}
         />
       );
     }
@@ -205,6 +252,7 @@ export default function PlayView({
         <h2 className="center">
           {t("clueGiverIs", { name: round.clue_giver_name ?? "?", team: round.team_name })}
         </h2>
+        {clock}
         <Poles round={round} />
         <div className="gaugewrap">
           <Gauge />
@@ -254,6 +302,8 @@ export default function PlayView({
         <h2 className="center">
           {amGuesser ? t("guessTitle") : t("watchingTitle", { team: round.team_name })}
         </h2>
+
+        {clock}
 
         <div className="cluebox">
           <div className="lbl">{t("clueLabel")}</div>
@@ -404,6 +454,14 @@ export default function PlayView({
 
   const myTeamBetPoints = detail?.team_points?.[me.team_id ?? ""] ?? 0;
 
+  // A round the clue clock closed. There is no clue, no marker and no distance
+  // — writing any of them would have been inventing them — so the card says
+  // what happened instead of rendering "null%" three times. Read off the stored
+  // detail rather than inferred from the missing fields, because "no clue" and
+  // "a clue that failed to save" would look identical from the outside and only
+  // one of them is a thing to explain to the table.
+  const timedOutClue = detail?.timed_out === "clue";
+
   return (
     <section className="card">
       <div className="turninfo">
@@ -411,10 +469,17 @@ export default function PlayView({
         <span className="pill gold">{t("revealTitle")}</span>
       </div>
 
-      <div className="cluebox">
-        <div className="lbl">{t("clueLabel")}</div>
-        <div className="txt">{round.clue}</div>
-      </div>
+      {timedOutClue ? (
+        <>
+          <h2 className="center">{t("timedOutClueTitle")}</h2>
+          <p className="sub center">{t("timedOutClueSub")}</p>
+        </>
+      ) : (
+        <div className="cluebox">
+          <div className="lbl">{t("clueLabel")}</div>
+          <div className="txt">{round.clue}</div>
+        </div>
+      )}
 
       <Poles round={round} />
       <div className="gaugewrap">
@@ -425,9 +490,20 @@ export default function PlayView({
         {pts > 0 ? "+" : ""}
         {pts}
       </div>
-      <div className="reveal-msg">
-        {t(msgKey)} · {t("secretWas")} {round.revealed_target}% · {t("markerWas")} {round.marker}%
-      </div>
+      {timedOutClue ? (
+        <div className="reveal-msg">
+          {round.revealed_target === null
+            ? null
+            : `${t("secretWas")} ${round.revealed_target}%`}
+        </div>
+      ) : (
+        <div className="reveal-msg">
+          {t(msgKey)} · {t("secretWas")} {round.revealed_target}% · {t("markerWas")} {round.marker}%
+        </div>
+      )}
+      {detail?.timed_out === "guess" ? (
+        <div className="sub center">{t("timedOutGuess")}</div>
+      ) : null}
 
       {detail && detail.guesses.length > 0 ? (
         <>
@@ -498,6 +574,7 @@ function ClueComposer({
   run,
   busy,
   onSkip,
+  clock,
 }: {
   round: Round;
   target: number | null;
@@ -506,6 +583,8 @@ function ClueComposer({
   busy: boolean;
   /** Give this scale up. Their own turn, so always theirs to abandon. */
   onSkip: () => void | Promise<void>;
+  /** The countdown, already built by the parent. Null when the room has none. */
+  clock: ReactNode;
 }) {
   const { t } = useLang();
   const [clue, setClue] = useState("");
@@ -555,6 +634,8 @@ function ClueComposer({
       </div>
       <h2 className="center">{t("clueTitle")}</h2>
       <p className="sub center">{t("clueSub")}</p>
+
+      {clock}
 
       <Poles round={round} />
       <div className="gaugewrap">

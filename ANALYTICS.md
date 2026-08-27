@@ -44,13 +44,13 @@ Nine funnel events, in the order a player meets them:
 | `create_open` | The host form is focused or touched | host | — |
 | `room_created` | The room exists | host | `teams`, `goal`, `bets`, `cats` (`general+analytics`) |
 | `joined` | A player takes a seat | that player | `from` (`home` / `gate`), `resumed`, `picked_team` |
-| `game_started` | The host presses Start | host | `players`, `teams` (teams with enough people to play) |
+| `game_started` | The host presses Start | host | `players`, `teams` (teams with enough people to play), `clue_sec`, `guess_sec` (the two phase limits as saved, `0` for unlimited) |
 | `clue_sent` | A clue-giver submits | the clue-giver only | `round`, `words` (words that count, free ones excluded), `blocked` — present only if a clue rule stopped them on the way |
 | `guess_locked` | A player locks a marker | that guesser only | `round`, `changed` — was an earlier marker replaced |
 | `round_revealed` | The reveal appears | **every device watching** | `round`, `points`, `distance` (`-1` when unknown) |
 | `game_finished` | The winner screen appears | every device | `rounds`, `score` |
 
-And eleven that are useful but never gate a later step:
+And twelve that are useful but never gate a later step:
 
 | Event | Props | Note |
 | --- | --- | --- |
@@ -61,15 +61,18 @@ And eleven that are useful but never gate a later step:
 | `bet_placed` | `side`, `round`, `markers` | Only when side bets are enabled for the room. `markers` is how many of the guessing team's markers were on screen when the call was made. |
 | `round_skipped` | `round`, `phase` | Somebody gave up on a round rather than scoring it. Once per skipped round: both rescues are claimed atomically, and the loser of a simultaneous press is handed the same fresh state back rather than an error, so the device checks the state came back *changed* before counting — a plain "the call worked" would report one rescue twice. `phase` says whether the clue had arrived yet — `clue` is a clue-giver who never delivered, `guess` is a table that could not read one. |
 | `host_claimed` | — | Somebody took the crown from a host who had gone quiet for two minutes. Once per takeover, on the device that is holding the crown afterwards and was not holding it before. |
+| `timer_expired` | `round`, `phase` | A phase clock ran out. Once per expiry: every device in the room notices the same instant and asks, the server claims the phase atomically, and the losers are handed the same fresh state rather than an error — so the device counts it only if the state came back with a different phase or round. `phase` is the useful half: `clue` is a clue-giver who ran out of time to write, `guess` is a guesser who ran out of time to answer. Can only fire in a room whose host chose a clock; see the ratio caveat in Part 2. |
 | `click` | `target`, `tag` | `target` is the control's `data-ev` label; see below. |
 | `error_shown` | `where`, `message` | `where` is `create`, `join-home` or `join-gate`. |
 | `session_end` | `seconds` | Fires on every page-hide, not once per visit. |
 | `pointer_heat` | `grid`, `cells` | Only when `NEXT_PUBLIC_TRACK_POINTER=1`. |
 
-The last two are worth treating differently from the rest of that list. They are
-not features anybody set out to use; they are the two escape hatches from a room
-that has stopped moving, so every one of them is a small report that something
-upstream failed. They are the subject of their own section in Part 2.
+`round_skipped`, `host_claimed` and `timer_expired` are worth treating
+differently from the rest of that list. None of them is a feature anybody set out
+to use — two are the escape hatches from a room that has stopped moving and the
+third is a phase nobody finished in time — so every one of them is a small report
+that something upstream failed. They are the subject of their own section in
+Part 2.
 
 Clicks are captured by one delegated listener, so every labelled control is
 already measured without anyone remembering to instrument it. The labels that
@@ -234,11 +237,11 @@ with nobody to guess; if it is not, something else is stalling rounds.
 
 ### The rescue hatches: how often the room stops moving
 
-Two events exist only because a room can get stuck, and both are best read as a
-ratio against the thing that was supposed to happen instead. Neither is on the
-`/analytics` funnel, because neither is a step anybody is meant to reach — they
-have their own **Other events** table on that page, directly under the funnel,
-for exactly this comparison.
+Three events exist only because a room can fail to move on its own, and all
+three are best read as a ratio against the thing that was supposed to happen
+instead. None is on the `/analytics` funnel, because none is a step anybody is
+meant to reach — they have their own **Other events** table on that page,
+directly under the funnel, for exactly this comparison.
 
 **`round_skipped` ÷ `round_revealed`** is how often a scale or a clue-giver
 defeats a table — as a trend rather than as a rate. Watch the units: the
@@ -262,7 +265,26 @@ faster takeover. Cross-check against `session_end` on the host's device; a host
 who never hid the tab and was still dethroned is a heartbeat bug, not a person
 leaving.
 
-Both events fire on the acting device only, so their event and session counts
+**`timer_expired`, which needs a denominator of its own.** This is the one ratio
+in this section that cannot be taken against all revealed rounds, and the reason
+is not units but population: the event can only fire in a room whose host chose a
+clock, so mixing in the unlimited rooms — which are the default, and therefore
+most of them — silently divides by a number that includes every game where
+expiry was impossible. `game_started` carries `clue_sec` and `guess_sec` for
+exactly this reason. In Mixpanel, filter the whole report to sessions with
+`game_started` where `clue_sec > 0`, and the figure becomes readable; in the
+Supabase editor the same thing is a join from `analytics_events` to the room's
+saved settings. Break it down by `phase`, which is where the fixes diverge.
+`phase = clue` climbing means either the limit is too tight for a blank page or
+the pair was unclueable — the same suspicion `round_skipped.phase = clue` raises,
+and the two are worth reading together, since a clock now catches some of what
+used to become a skip. `phase = guess` is a different problem entirely: markers
+were expected and did not arrive, which usually means people did not notice it
+was their turn rather than that they could not decide. And unlike the other two,
+this one has no click label to cross-check against, because nobody presses
+anything — which is precisely why the event has to exist.
+
+All three fire on the acting device only, so their event and session counts
 agree — unlike `round_revealed`, which fires everywhere. The matching click
 labels are `skip-round` and `claim-host`; note that `skip-round` is on two
 different buttons (the clue-giver's own give-up, and the guessers' escape hatch

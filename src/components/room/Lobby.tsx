@@ -5,7 +5,9 @@ import { useLang } from "@/components/LangProvider";
 import { track } from "@/lib/client/track";
 import {
   MIN_TEAM_SIZE,
+  TIMER_CHOICES,
   canStartGame,
+  cleanTimerSeconds,
   playableTeams,
   underStaffedTeams,
 } from "@/lib/game/engine";
@@ -34,6 +36,11 @@ export default function Lobby({
   const [bets, setBets] = useState(room.bets_enabled);
   const [general, setGeneral] = useState(room.categories.includes("general"));
   const [analytics, setAnalytics] = useState(room.categories.includes("analytics"));
+  // Cleaned on the way in as well as on the way out. A room created before the
+  // columns existed comes back with these undefined, and the picker has to show
+  // something — "no clock" is both the truth and the safe default.
+  const [clueSeconds, setClueSeconds] = useState(() => cleanTimerSeconds(room.clue_seconds));
+  const [guessSeconds, setGuessSeconds] = useState(() => cleanTimerSeconds(room.guess_seconds));
 
   // Same rule the server enforces in startGame, evaluated here so the Start
   // button is simply unavailable instead of the host pressing it and being
@@ -57,7 +64,13 @@ export default function Lobby({
     const categories = [general ? "general" : null, analytics ? "analytics" : null].filter(
       (c): c is string => c !== null
     );
-    const res = await run("settings", { categories, goal, betsEnabled: bets });
+    const res = await run("settings", {
+      categories,
+      goal,
+      betsEnabled: bets,
+      clueSeconds,
+      guessSeconds,
+    });
     if (res) {
       setSaved(true);
       setTimeout(() => setSaved(false), 1800);
@@ -159,6 +172,54 @@ export default function Lobby({
             </label>
           </div>
 
+          {/* Two clocks and not one. The two jobs are nothing alike: writing a
+              clue is a blank page, and moving a slider you are already looking
+              at is a decision — so a single limit is either cruel to the
+              clue-giver or no limit at all for the guessers. Both default to
+              unlimited, which is exactly how every room played before this
+              existed. */}
+          <label className="fl">{t("timersLabel")}</label>
+          <p className="sub" style={{ margin: "0 0 10px" }}>
+            {t("timersSub")}
+          </p>
+          <div className="timerpick">
+            <div>
+              <label className="fl" htmlFor="lobby-clue-timer">
+                {t("clueTimerLabel")}
+              </label>
+              <select
+                id="lobby-clue-timer"
+                value={clueSeconds}
+                onChange={(e) => setClueSeconds(cleanTimerSeconds(e.target.value))}
+              >
+                {TIMER_CHOICES.map((s) => (
+                  <option key={s} value={s}>
+                    {s === 0 ? t("timerOff") : t("timerMin", { n: s / 60 })}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label className="fl" htmlFor="lobby-guess-timer">
+                {t("guessTimerLabel")}
+              </label>
+              <select
+                id="lobby-guess-timer"
+                value={guessSeconds}
+                onChange={(e) => setGuessSeconds(cleanTimerSeconds(e.target.value))}
+              >
+                {TIMER_CHOICES.map((s) => (
+                  <option key={s} value={s}>
+                    {s === 0 ? t("timerOff") : t("timerMin", { n: s / 60 })}
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>
+          {clueSeconds > 0 || guessSeconds > 0 ? (
+            <p className="stepnote">{t("timerRules")}</p>
+          ) : null}
+
           {saved ? <div className="ok">{t("settingsSaved")}</div> : null}
 
           <div className="actions">
@@ -171,7 +232,20 @@ export default function Lobby({
               data-ev="start-game"
               onClick={async () => {
                 const res = await run("start");
-                if (res) track("game_started", { players: players.length, teams: playable.length });
+                // The two limits ride along on the one event that fires once per
+                // game, from the saved room rather than from the pickers — a
+                // host who moved a picker without pressing Save is playing with
+                // the old value, and this has to say what the room does. It is
+                // what makes `timer_expired` divisible: without knowing which
+                // games had a clock, the only available denominator mixes rooms
+                // that could not possibly have expired into the ratio.
+                if (res)
+                  track("game_started", {
+                    players: players.length,
+                    teams: playable.length,
+                    clue_sec: cleanTimerSeconds(room.clue_seconds),
+                    guess_sec: cleanTimerSeconds(room.guess_seconds),
+                  });
               }}
               disabled={busy || !canStart}
             >

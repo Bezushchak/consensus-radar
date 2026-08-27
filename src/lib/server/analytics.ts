@@ -60,6 +60,13 @@ const SIDE_EVENTS = [
   // — a better scale pool, a clearer clue screen — not a better button.
   "round_skipped", // props.round, props.phase
   "host_claimed",
+  // A phase clock ran out. Sits next to `round_skipped` because it measures the
+  // same thing from the other side: how often a table cannot finish a phase
+  // under its own steam. `props.phase` is what makes it useful — "clue" says
+  // the clue screen is too hard or the limit too tight, "guess" says people are
+  // not noticing that it is their turn. Only fires in rooms that chose a clock,
+  // so the denominator is never `round_revealed` across all rooms.
+  "timer_expired", // props.round, props.phase
   "click", // props.target = the data-ev label
   "pointer_heat", // sampled cursor grid, off unless enabled
   "error_shown", // props.message

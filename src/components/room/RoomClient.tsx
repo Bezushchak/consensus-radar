@@ -31,7 +31,7 @@ export type RunAction = (
 
 export default function RoomClient({ code }: { code: string }) {
   const { t, lang } = useLang();
-  const { state, error, live, issuedAt, refresh, adoptState } = useRoom(code);
+  const { state, error, live, issuedAt, skewMs, refresh, adoptState } = useRoom(code);
 
   const [identity, setIdentity] = useState<Identity | null>(null);
   const [ready, setReady] = useState(false);
@@ -293,6 +293,7 @@ export default function RoomClient({ code }: { code: string }) {
           round={round}
           run={run}
           busy={busy}
+          skewMs={skewMs}
         />
       ) : null}
 

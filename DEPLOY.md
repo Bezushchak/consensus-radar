@@ -30,7 +30,7 @@ npm install
 npm run verify
 ```
 
-`verify` runs the type checker, the 55 unit tests, and a production build. All three must pass. This is the same gate Vercel will run, so if it passes here it will pass there.
+`verify` runs the type checker, the 65 unit tests, and a production build. All three must pass. This is the same gate Vercel will run, so if it passes here it will pass there.
 
 ---
 
@@ -65,7 +65,9 @@ That one script creates everything: the room, player, round, guess and bet table
 
 If instead you get a red error, **nothing at all was applied.** The SQL editor runs a whole script inside one transaction, so one failing statement rolls back every statement above it; there is no half-applied state. Fix what the error names and run the file again. This matters because of how it shows up next: if `schema.sql` failed and you go on to the seed anyway, the seed fails with `ERROR: 42P01: relation "public.scales" does not exist`. That error names the seed, but the cause is the script before it — the seed is trying to fill a table that was never created.
 
-**If you already ran an earlier version of this file, run it again now.** Postgres skips `create table if not exists` for a table that already exists, which would leave the newer columns missing, so the script has an explicit migration block that adds them one by one — `scales`, `analytics_events`, `players.player_uid`, `player_round_stats.player_uid`, and the Ukrainian label columns on `rounds`. Re-running is the only way to get them, and it touches none of your existing data.
+**If you already ran an earlier version of this file, run it again now.** Postgres skips `create table if not exists` for a table that already exists, which would leave the newer columns missing, so the script has an explicit migration block that adds them one by one — `scales`, `analytics_events`, `players.player_uid`, `player_round_stats.player_uid`, the Ukrainian label columns on `rounds`, and the three phase-clock columns (`rooms.clue_seconds`, `rooms.guess_seconds`, `rounds.phase_deadline`). Re-running is the only way to get them, and it touches none of your existing data.
+
+The clock columns are the newest of those, and worth a sentence because the symptom of skipping them is so quiet: the game plays exactly as it always did, but the lobby's two timer pickers refuse to save. Every limit reads as unlimited, no countdown is ever drawn, and nothing else about the room changes — the feature is absent rather than broken. If saving settings shows you an error mentioning `clue_seconds`, that is this, and the fix is to run `schema.sql` again.
 
 **1.5** Now load the scale catalogue. Click **New query** again, open `supabase/scales-seed.sql`, copy the whole file, paste, and **Run**. It inserts 262 bilingual pairs and finishes with a count you can eyeball: you want 262 rows, 180 general and 82 analytics.
 
@@ -217,7 +219,7 @@ Vercel builds every push to `main` and promotes it to production automatically. 
 
 Open the production URL on your phone, create a room, and read the four-character code out loud to somebody sitting near you (or send them the link with the Copy button). Have them open the same URL on their own phone, enter the code, and pick a team.
 
-Check these seven things, which together exercise everything that could go wrong across devices:
+Check these eight things, which together exercise everything that could go wrong across devices:
 
 1. Both names appear in the lobby on both phones within a second or two.
 2. Each phone is on a different team, and Start Game becomes clickable only once two teams have someone in them.
@@ -225,7 +227,8 @@ Check these seven things, which together exercise everything that could go wrong
 4. When a guesser locks their marker, the other phones see their name tick over to done without showing the value they chose.
 5. At reveal, everybody sees the same target, the same averaged marker, and the per-player breakdown.
 6. **The escape hatches, which need a phone to actually go quiet.** On the clue-giver's turn, have them press Skip this round: nothing is scored, the turn passes to the other team, and the round number does not advance. Then close the clue-giver's tab entirely and wait two minutes on the other phone — a Skip button should appear there too, because the people staring at an empty dial are the ones who need it. Same test for hosting: close the host's tab, wait two minutes, and the other phone should offer to take over as host. Both waits are real; the threshold is two minutes and the host and clue-giver report in every 45 seconds, so nothing appears sooner.
-7. **The end of the game.** Play to the target score and check the winner screen shows the per-player table under the scoreboard — average error, best, bullseyes, bets — with your own row highlighted. Somebody who only ever gave clues appears at the bottom with "clues only" rather than a zero.
+7. **The clocks, which are the one feature that needs the schema re-run.** In the lobby, set the clue timer to 1 min and the guess timer to 1 min, press Save settings, and confirm it says saved rather than showing an error — an error naming `clue_seconds` means step 1.4 was skipped or run from an older copy of the file. Then start a round and let the clue timer run out without writing anything: the round reveals with no clue and zero points for that team, the secret is shown, and Next passes the turn. Play the next round properly and this time let the *guess* timer run out on one phone while the other locks a marker normally — the silent phone is credited with 50, the round reveals, and the average sits between the two. Watch the clue-giver's phone for the last twenty seconds: the countdown goes amber, then red for the final five, and only that phone beeps and buzzes. The phones that owe nothing stay silent, which is the point.
+8. **The end of the game.** Play to the target score and check the winner screen shows the per-player table under the scoreboard — average error, best, bullseyes, bets — with your own row highlighted. Somebody who only ever gave clues appears at the bottom with "clues only" rather than a zero. A round lost to the clue clock leaves no marker in anybody's average, so it does not appear as a miss for the people who never got to guess.
 
 There is no player limit in the code. Practically, a room works comfortably up to about twenty people across four teams; beyond that the lobby list gets unwieldy long before anything technical strains.
 

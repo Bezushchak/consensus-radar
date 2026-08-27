@@ -3,6 +3,7 @@ import {
   ApiError,
   claimHost,
   endGame,
+  expireRound,
   forceReveal,
   leaveRoom,
   nextRound,
@@ -26,7 +27,8 @@ export const dynamic = "force-dynamic";
  * what that player is allowed to do (see src/lib/server/rooms.ts).
  *
  *   team      { teamId }              lobby: move to another team
- *   settings  { categories, goal, betsEnabled, lang, teamNames }  host only
+ *   settings  { categories, goal, betsEnabled, lang, teamNames,
+ *              clueSeconds, guessSeconds }                       host only
  *   start     -                       host only
  *   clue      { clue }                clue-giver only
  *   guess     { value }               active team, non clue-giver
@@ -34,6 +36,7 @@ export const dynamic = "force-dynamic";
  *   reveal    -                       host or clue-giver (skip stragglers)
  *   next      -                       host or clue-giver
  *   skip      -                       host or clue-giver, abandon the round
+ *   expire    -                       anyone, once the phase clock has run out
  *   again     -                       host only, back to lobby
  *   end       -                       host only, finish and record results
  *   host      -                       take over from a host who has gone quiet
@@ -59,6 +62,8 @@ export async function POST(
           betsEnabled: body.betsEnabled,
           lang: body.lang,
           teamNames: body.teamNames,
+          clueSeconds: body.clueSeconds,
+          guessSeconds: body.guessSeconds,
         });
       case "start":
         return startGame(code, playerId, token);
@@ -74,6 +79,8 @@ export async function POST(
         return nextRound(code, playerId, token);
       case "skip":
         return skipRound(code, playerId, token);
+      case "expire":
+        return expireRound(code, playerId, token);
       case "again":
         return playAgain(code, playerId, token);
       case "end":

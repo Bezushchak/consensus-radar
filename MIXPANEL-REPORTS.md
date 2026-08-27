@@ -70,9 +70,12 @@ otherwise "today" ends at 3am and every daily number is cut in the wrong place.
 two traps in the description field where they will be read (`round_revealed`
 fires once per watching device; `session_end` fires per page-hide), and hide
 `pointer_heat` and `mixpanel_probe`. Tag the funnel events with one tag so the
-event picker can filter to just them, and tag `round_skipped` and `host_claimed`
-with a second one — they are failure signals rather than features, and grouping
-them keeps a reader from reading a rescue as a milestone.
+event picker can filter to just them, and tag `round_skipped`, `host_claimed` and
+`timer_expired` with a second one — they are failure signals rather than features,
+and grouping them keeps a reader from reading a rescue as a milestone. Put the
+population caveat in `timer_expired`'s description too, because it is the one
+that will otherwise be misread first: **it can only fire in a room that chose a
+phase clock**, and unlimited is the default.
 
 **Two boards.** "Activation" and "Game quality". Reports are saved into boards,
 and deciding this first stops the reports piling up in one list.
@@ -222,9 +225,9 @@ available in the whole project.
 
 ### 10 — The rescue hatches
 
-Two events exist only because a room can get stuck, and both are read as a ratio
-against the thing that should have happened instead. Formulas make it one chart
-rather than two numbers divided by hand.
+Three events exist only because a room can fail to move on its own, and each is
+read as a ratio against the thing that should have happened instead. Formulas
+make it one chart rather than two numbers divided by hand.
 
 - **Type:** Insights, with the formula editor (`Σ`)
 - **Metric A:** `round_skipped`, Total Events. **Metric B:** `round_revealed`,
@@ -234,6 +237,12 @@ rather than two numbers divided by hand.
 - Second chart, same shape: A = `host_claimed` Total Events, B = `room_created`
   Total Events, `A/B`. Both of those fire exactly once per event, so that ratio
   is a true rate.
+- Third chart: A = `timer_expired` Total Events, B = `round_revealed` Total
+  Events, `A/B`, broken down by `phase` — **and filtered**, which the other two
+  are not. Add a cohort filter of sessions that did `game_started` where
+  `clue_sec > 0`, or the denominator includes every game that had no clock and
+  could not possibly have expired. Unlimited is the default, so unfiltered this
+  chart understates by however much of your traffic never touched the setting.
 
 **Mind the units on the first chart.** `round_skipped` fires once per skipped
 round, but `round_revealed` fires once per *watching device*, so `A/B` is not the
@@ -259,12 +268,26 @@ a scale out loud, and somebody impatient. A large one means hosting is landing o
 whoever clicked first, and the fix is fewer host-only controls rather than a
 faster takeover.
 
+`timer_expired ÷ round_revealed`, within timed rooms, is how often a table cannot
+finish a phase under its own steam. `phase = clue` climbing means the limit is too
+tight for a blank page, or the pair was unclueable — read it beside
+`round_skipped.phase = clue`, since a clock now catches some of what used to
+become a skip, and a fall in one with a rise in the other is the same problem
+wearing a different hat rather than an improvement. `phase = guess` is a different
+complaint: markers were expected and did not arrive, which is usually people not
+noticing it was their turn rather than people unable to decide. Worth a glance at
+`clue_sec` and `guess_sec` as a breakdown on `game_started` too — that tells you
+which limits hosts actually pick, and a limit nobody chooses is one to drop from
+the picker.
+
 **Trap:** the two matching click labels are `skip-round` and `claim-host`, and
 `skip-round` is on two different buttons — the clue-giver's own give-up and the
 guessers' escape hatch once the clue-giver goes quiet. `click` merges them; only
 `round_skipped.phase` tells them apart. Cross-check a suspicious `host_claimed`
 against `session_end` on the same device: a host who never hid their tab and was
-still dethroned is a heartbeat bug, not a person leaving.
+still dethroned is a heartbeat bug, not a person leaving. `timer_expired` has no
+click label to cross-check against at all, because nobody presses anything —
+which is exactly why it needed to be an event.
 
 **If you are on the free plan and can only keep five:** the host funnel, the guest
 funnel, the error queue, round quality, and setup time. Configuration, clicks and

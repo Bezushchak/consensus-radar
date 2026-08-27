@@ -24,6 +24,22 @@ export function useRoom(code: string) {
   // "state that was already on the wire before I did it".
   const [issuedAt, setIssuedAt] = useState(0);
 
+  // How far this device's clock is behind the server's, in milliseconds.
+  //
+  // Phone clocks are wrong by minutes more often than anyone expects, and the
+  // phase countdown is computed from an instant the server chose — so a device
+  // that trusted its own `Date.now()` would show a different number from
+  // everybody else at the table and expire the phase at the wrong moment.
+  //
+  // Measured against the moment the response *arrived* rather than the moment
+  // it was asked for, which deliberately leans one way: the reply was written
+  // before it landed, so this reads the server as very slightly earlier than it
+  // really is, and the countdown runs a fraction of a second long. Long is the
+  // safe direction — the server re-checks the deadline against its own clock
+  // and rejects anything early, so a client that fires late is corrected by
+  // waiting, while one that fires early is corrected by being refused.
+  const [skewMs, setSkewMs] = useState(0);
+
   const inFlight = useRef(false);
   const queued = useRef(false);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -34,13 +50,31 @@ export function useRoom(code: string) {
   const seq = useRef(0);
   const applied = useRef(0);
 
-  /** Adopt state we were handed directly (a join or an action response). */
-  const adoptState = useCallback((next: RoomState) => {
-    applied.current = ++seq.current;
-    setState(next);
-    setError(null);
-    setIssuedAt(Date.now());
+  /**
+   * Reads the offset out of a payload, if it carries one.
+   *
+   * `now` is absent from a response served by a deployment older than the
+   * timers, and unparseable if something upstream mangles it. Either way the
+   * answer is to leave the offset alone rather than to reset it to zero: a
+   * stale-but-measured offset is closer to the truth than pretending the
+   * device's clock is right.
+   */
+  const readSkew = useCallback((next: RoomState, arrivedAt: number) => {
+    const serverNow = Date.parse(next.now ?? "");
+    if (Number.isFinite(serverNow)) setSkewMs(serverNow - arrivedAt);
   }, []);
+
+  /** Adopt state we were handed directly (a join or an action response). */
+  const adoptState = useCallback(
+    (next: RoomState) => {
+      applied.current = ++seq.current;
+      setState(next);
+      setError(null);
+      setIssuedAt(Date.now());
+      readSkew(next, Date.now());
+    },
+    [readSkew]
+  );
 
   const refresh = useCallback(async () => {
     if (inFlight.current) {
@@ -52,11 +86,13 @@ export function useRoom(code: string) {
     const requestedAt = Date.now();
     try {
       const next = await fetchState(code);
+      const arrivedAt = Date.now();
       if (mounted.current && mySeq >= applied.current) {
         applied.current = mySeq;
         setState(next);
         setError(null);
         setIssuedAt(requestedAt);
+        readSkew(next, arrivedAt);
       }
     } catch (e) {
       if (mounted.current) setError(e instanceof Error ? e.message : "Could not load the room");
@@ -67,7 +103,7 @@ export function useRoom(code: string) {
         void refresh();
       }
     }
-  }, [code]);
+  }, [code, readSkew]);
 
   /** Collapse bursts of realtime events into one refetch. */
   const nudge = useCallback(() => {
@@ -138,5 +174,5 @@ export function useRoom(code: string) {
     };
   }, [refresh]);
 
-  return { state, error, live, issuedAt, refresh, adoptState };
+  return { state, error, live, issuedAt, skewMs, refresh, adoptState };
 }

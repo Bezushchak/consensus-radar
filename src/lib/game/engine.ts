@@ -304,6 +304,149 @@ export function canSkipRound(phase: Phase): boolean {
 }
 
 // ---------------------------------------------------------------------
+// Phase timers
+//
+// Two clocks, chosen in the lobby and fixed for the game: one for the
+// clue-giver, one for the guessing team. Both default to off, so a room that
+// nobody configures plays exactly as it did before timers existed.
+//
+// The whole design turns on one decision: a phase stores a **deadline**, not a
+// remaining duration. Five phones counting their own seconds drift apart and
+// expire at five different moments; five phones counting down to the same
+// instant agree. It also means a tab that was asleep for the whole phase wakes
+// up already knowing it is over, with nothing to reconstruct.
+//
+// Nothing here reads a clock of its own — `now` is always passed in — which is
+// what makes the boundaries testable.
+// ---------------------------------------------------------------------
+
+/**
+ * What the lobby offers, in seconds. 0 is unlimited and is deliberately first:
+ * it is the default, and the picker reads left to right.
+ */
+export const TIMER_CHOICES = [0, 60, 180, 300] as const;
+
+/** Clamps anything to one of the offered values, falling back to unlimited. */
+export function cleanTimerSeconds(raw: unknown): number {
+  const n = Math.trunc(typeof raw === "number" ? raw : Number(raw));
+  // Widened rather than asserted narrow: `includes` on a readonly tuple wants
+  // the literal union, and asserting a `number` into it to ask the question is
+  // the wrong way round. NaN falls through to 0 like everything else unknown.
+  return (TIMER_CHOICES as readonly number[]).includes(n) ? n : 0;
+}
+
+/**
+ * The marker a player who ran out of time is credited with.
+ *
+ * Dead centre, which is the least opinionated thing a slider can say: it is the
+ * default position, so it is also what somebody who never touched the dial had
+ * in front of them. It can still score — 50 is a bullseye when the secret is
+ * near the middle — and that is correct rather than generous: the round is not a
+ * punishment, it is an average, and refusing to count the marker would quietly
+ * penalise the whole team for one slow phone.
+ */
+export const AUTO_MARKER = 50;
+
+/** Seconds left drops below this and the UI turns amber and beeps once. */
+export const TIMER_WARN_AT = 20;
+
+/** Below this it goes red and beeps faster. The last five seconds. */
+export const TIMER_FINAL_AT = 5;
+
+/**
+ * How far past the deadline a device waits before asking the server to end the
+ * phase.
+ *
+ * A phone whose clock is a second fast must not be able to cut the phase short
+ * for everybody else. The server re-checks the deadline against its own clock
+ * anyway and is the real guard; this only stops the pointless request.
+ */
+export const EXPIRE_GRACE_MS = 1500;
+
+/** Which of the room's two clocks applies to a phase. Reveal is never timed. */
+export function phaseSeconds(
+  room: { clue_seconds: number; guess_seconds: number },
+  phase: Phase
+): number {
+  if (phase === "clue") return cleanTimerSeconds(room.clue_seconds);
+  if (phase === "guess") return cleanTimerSeconds(room.guess_seconds);
+  return 0;
+}
+
+/**
+ * The instant a phase should end, as an ISO string, or null when it is untimed.
+ * `from` is the moment the phase started — the server's clock, always.
+ */
+export function deadlineFor(
+  room: { clue_seconds: number; guess_seconds: number },
+  phase: Phase,
+  from: number
+): string | null {
+  const seconds = phaseSeconds(room, phase);
+  return seconds > 0 ? new Date(from + seconds * 1000).toISOString() : null;
+}
+
+/**
+ * Whole seconds remaining, or null when there is no clock to read.
+ *
+ * Rounds up, so a countdown shows "1" for the whole of the last second and
+ * reaches 0 exactly when the time is genuinely gone — a floor would display 0
+ * for a second while the phase was still live, which is the one number a player
+ * would call a bug. Never returns less than 0: how long ago it expired is not
+ * something any caller here wants.
+ *
+ * An unreadable stamp reads as untimed rather than as expired, the same way an
+ * unreadable `last_seen_at` reads as present: a shape this code does not
+ * recognise must not end somebody's turn.
+ */
+export function secondsLeft(deadline: string | null | undefined, now: number): number | null {
+  if (!deadline) return null;
+  const at = Date.parse(deadline);
+  if (!Number.isFinite(at)) return null;
+  return Math.max(Math.ceil((at - now) / 1000), 0);
+}
+
+/** How the countdown should look, and whether it should make a noise. */
+export type TimerLevel = "none" | "calm" | "warn" | "final" | "over";
+
+export function timerLevel(left: number | null): TimerLevel {
+  if (left === null) return "none";
+  if (left <= 0) return "over";
+  if (left <= TIMER_FINAL_AT) return "final";
+  if (left <= TIMER_WARN_AT) return "warn";
+  return "calm";
+}
+
+/**
+ * Is this device allowed to ask the server to end the phase?
+ *
+ * Deliberately client-driven, for the same reason the host takeover is a button:
+ * there is no per-round job on the server, and adding one would mean a cron that
+ * wakes every few seconds for a game nobody is playing. Whichever tab notices
+ * first asks; the server claims the phase atomically, so the other four asking
+ * in the same second change nothing.
+ */
+export function mayExpire(
+  deadline: string | null | undefined,
+  now: number,
+  grace = EXPIRE_GRACE_MS
+): boolean {
+  if (!deadline) return false;
+  const at = Date.parse(deadline);
+  if (!Number.isFinite(at)) return false;
+  return now >= at + grace;
+}
+
+/** mm:ss, for the countdown itself. Clamped at zero, never negative. */
+export function formatClock(left: number | null): string {
+  if (left === null) return "";
+  const total = Math.max(Math.trunc(left), 0);
+  const mins = Math.floor(total / 60);
+  const secs = total % 60;
+  return `${mins}:${String(secs).padStart(2, "0")}`;
+}
+
+// ---------------------------------------------------------------------
 // Calibration — how each person did, across a whole game
 //
 // The scoreboard is a team number by design: a round is won by a group

@@ -21,6 +21,10 @@ export interface Room {
   categories: string[];
   goal: number;
   bets_enabled: boolean;
+  /** Seconds the clue-giver gets. 0 = no clock. Chosen in the lobby. */
+  clue_seconds: number;
+  /** Seconds the guessing team gets. 0 = no clock. */
+  guess_seconds: number;
   teams: Team[];
   active_team_index: number;
   round_no: number;
@@ -64,6 +68,12 @@ export interface RevealDetail {
   guesses: RevealDetailGuess[];
   bets: RevealDetailBet[];
   team_points: Record<string, number>;
+  /**
+   * Set when the round ended on the clock rather than by being played out.
+   * Optional because every round revealed before timers existed has no such
+   * key, and the reveal card has to read those rows too.
+   */
+  timed_out?: Phase;
 }
 
 export interface Round {
@@ -88,6 +98,13 @@ export interface Round {
   points: number | null;
   revealed_target: number | null;
   reveal_detail: RevealDetail | null;
+  /**
+   * When the clock on the phase named in `phase` runs out. Null means untimed.
+   * An instant rather than a duration on purpose: a countdown computed from a
+   * shared deadline agrees across devices, whereas one counting its own seconds
+   * drifts and would expire at a different moment on every phone.
+   */
+  phase_deadline: string | null;
   created_at: string;
   revealed_at: string | null;
 }
@@ -132,6 +149,16 @@ export interface RoomState {
   round: Round | null;
   guesses: GuessRow[];
   bets: BetRow[];
+  /**
+   * The server's clock at the moment this payload was built.
+   *
+   * The countdown needs it. Phone clocks are wrong by minutes more often than
+   * anyone expects, and a timer that trusted `Date.now()` would show a different
+   * number on every device and fire early on the worst one. Each state read
+   * gives the client a fresh offset to correct by, and reads happen at least
+   * every fifteen seconds.
+   */
+  now: string;
 }
 
 /** Stored in localStorage so a device can prove who it is without auth. */

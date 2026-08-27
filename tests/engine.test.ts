@@ -4,34 +4,46 @@ import { join } from "node:path";
 import { test } from "node:test";
 
 import {
+  AUTO_MARKER,
   AWAY_AFTER_MS,
+  EXPIRE_GRACE_MS,
   MAX_TEAMS,
   MIN_TEAM_SIZE,
+  TIMER_CHOICES,
+  TIMER_FINAL_AT,
+  TIMER_WARN_AT,
   averageMarker,
   betIsCorrect,
   canSkipRound,
   canStartGame,
   cleanClue,
   cleanName,
+  cleanTimerSeconds,
   cleanUid,
   clampSlider,
   clueGiverIsAway,
+  deadlineFor,
   firstTeamIndexWithPlayers,
   foldCalibration,
+  formatClock,
   generateRoomCode,
   hostIsAway,
   makeTeams,
+  mayExpire,
   nextTeamIndex,
   normalizeCode,
+  phaseSeconds,
   pickClueGiver,
   pickNewHost,
   pickScale,
   playableTeams,
   randomTarget,
   scoreFor,
+  secondsLeft,
   seenRecently,
   teamSize,
   teamsAtGoal,
+  timerLevel,
   underStaffedTeams,
   type StoredReveal,
 } from "../src/lib/game/engine";
@@ -1348,4 +1360,248 @@ test("the rescue hatches are stored, counted, and visible on the dashboard", () 
   assert.equal(side("howto_open")?.events, 0);
   assert.equal(side("bet_placed")?.events, 0);
   assert.equal(side("session_end")?.events, 0);
+});
+
+// ---------------------------------------------------------------------
+// The two phase clocks
+//
+// Every boundary below is a moment where somebody either keeps their turn or
+// loses it, so each one is pinned to a number rather than described. Nothing in
+// this part of the engine reads a clock of its own — `now` is a parameter
+// everywhere — which is the entire reason the boundaries can be tested at all.
+// ---------------------------------------------------------------------
+
+/** A room with the two limits set, in seconds. */
+const timed = (clue: number, guess: number) => ({ clue_seconds: clue, guess_seconds: guess });
+
+/**
+ * What `select("*")` hands back on a database where `supabase/schema.sql` has
+ * not been re-run: the columns are simply absent. Cast because the parameter
+ * types promise numbers and the database does not.
+ */
+const unmigrated = { clue_seconds: undefined, guess_seconds: undefined } as unknown as {
+  clue_seconds: number;
+  guess_seconds: number;
+};
+
+/** An ISO stamp `ms` milliseconds away from the frozen `NOW`. */
+const at = (ms: number) => new Date(NOW + ms).toISOString();
+
+test("a room can only store a limit the lobby actually offers", () => {
+  assert.equal(TIMER_CHOICES[0], 0, "unlimited is first, because it is the default");
+  for (const s of TIMER_CHOICES) assert.equal(cleanTimerSeconds(s), s);
+
+  // A `<select>` hands back strings, so this is the ordinary path in, not an
+  // edge case at it.
+  assert.equal(cleanTimerSeconds("180"), 180);
+
+  // Everything unrecognised becomes "no clock". Clamped rather than rejected on
+  // purpose: unlimited is the only wrong answer that cannot strand a table
+  // waiting on a deadline nobody in the room chose.
+  for (const junk of [90, 45, -60, 1e9, NaN, Infinity, null, undefined, "", "soon", {}, []]) {
+    assert.equal(cleanTimerSeconds(junk), 0, `${String(junk)} should read as unlimited`);
+  }
+});
+
+test("each phase reads its own clock, and the reveal reads none", () => {
+  const room = timed(60, 300);
+  assert.equal(phaseSeconds(room, "clue"), 60);
+  assert.equal(phaseSeconds(room, "guess"), 300);
+  assert.equal(phaseSeconds(room, "reveal"), 0, "the result card is never on a timer");
+
+  // Two clocks and not one is the whole point of the pair: writing a clue from a
+  // blank page and moving a slider you are already looking at are not the same
+  // job, so a single shared limit would be either cruel or no limit at all.
+  assert.equal(phaseSeconds(timed(0, 60), "clue"), 0, "off for one phase, on for the other");
+  assert.equal(phaseSeconds(timed(0, 60), "guess"), 60);
+
+  // An un-migrated database plays exactly as every room played before timers
+  // existed. This is the degradation the whole feature is built around.
+  assert.equal(phaseSeconds(unmigrated, "clue"), 0);
+  assert.equal(phaseSeconds(unmigrated, "guess"), 0);
+});
+
+test("a phase stores the instant it ends, not the time it has left", () => {
+  const room = timed(60, 300);
+
+  // An instant, so five phones that disagree about what time it is still agree
+  // about when the phase is over — and a tab that slept through the whole thing
+  // wakes up already knowing, with nothing to reconstruct.
+  assert.equal(deadlineFor(room, "clue", NOW), at(60_000));
+  assert.equal(deadlineFor(room, "guess", NOW), at(300_000));
+
+  // Null is the "no clock" signal the whole way down: the column stays null, the
+  // countdown renders nothing at all, and `mayExpire` refuses.
+  assert.equal(deadlineFor(room, "reveal", NOW), null);
+  assert.equal(deadlineFor(timed(0, 0), "clue", NOW), null);
+  assert.equal(deadlineFor(unmigrated, "clue", NOW), null);
+
+  // Round trip. The second half is the regression that would hurt most: a
+  // deadline that reads as gone the moment it is written would end every single
+  // round at zero, in every room that switched a clock on.
+  assert.equal(secondsLeft(deadlineFor(room, "clue", NOW), NOW), 60);
+  assert.equal(mayExpire(deadlineFor(room, "clue", NOW), NOW), false);
+});
+
+test("the countdown rounds up, so a zero on screen means the time is really gone", () => {
+  assert.equal(secondsLeft(at(60_000), NOW), 60);
+  assert.equal(secondsLeft(at(59_001), NOW), 60, "still inside the sixtieth second");
+  assert.equal(secondsLeft(at(59_000), NOW), 59);
+  assert.equal(secondsLeft(at(1), NOW), 1, "a flooring version would show 0 here, mid-turn");
+  assert.equal(secondsLeft(at(0), NOW), 0);
+
+  // How long ago it ran out is nobody's business here: the bar would run past
+  // its own end and the clock would read "-0:03".
+  assert.equal(secondsLeft(at(-5_000), NOW), 0);
+  assert.equal(secondsLeft(at(-86_400_000), NOW), 0);
+
+  // No clock and an unreadable clock give the same answer, and it is the safe
+  // one — a stamp this code cannot parse must not be allowed to end somebody's
+  // turn. The same asymmetry `seenRecently` uses, for the same reason.
+  assert.equal(secondsLeft(null, NOW), null);
+  assert.equal(secondsLeft(undefined, NOW), null);
+  assert.equal(secondsLeft("", NOW), null);
+  assert.equal(secondsLeft("tomorrow", NOW), null);
+});
+
+test("the level is what turns the screen amber and makes the phone beep", () => {
+  assert.equal(TIMER_WARN_AT, 20, "the amber threshold the CSS and the alarm both assume");
+  assert.equal(TIMER_FINAL_AT, 5);
+
+  assert.equal(timerLevel(null), "none", "an unlimited room draws no clock at all");
+  assert.equal(timerLevel(300), "calm");
+  assert.equal(timerLevel(21), "calm");
+  assert.equal(timerLevel(20), "warn", "the thresholds are inclusive");
+  assert.equal(timerLevel(6), "warn");
+  assert.equal(timerLevel(5), "final");
+  assert.equal(timerLevel(1), "final");
+  assert.equal(timerLevel(0), "over");
+
+  // Unreachable through `secondsLeft`, which clamps. Pinned anyway, because
+  // "over" is the only answer here that does not put a negative number and a
+  // fresh alarm in front of a player every 250 ms.
+  assert.equal(timerLevel(-3), "over");
+});
+
+test("a phone whose clock runs fast cannot cut the phase short", () => {
+  assert.equal(EXPIRE_GRACE_MS, 1_500);
+
+  assert.equal(mayExpire(at(1_000), NOW), false, "there is still time on the clock");
+  assert.equal(mayExpire(at(0), NOW), false, "the deadline on its own is not enough");
+  assert.equal(mayExpire(at(-EXPIRE_GRACE_MS + 1), NOW), false);
+  assert.equal(mayExpire(at(-EXPIRE_GRACE_MS), NOW), true);
+  assert.equal(mayExpire(at(-60_000), NOW), true, "a tab that woke up late asks straight away");
+
+  // Nothing to expire is never expirable, and neither is a stamp this code
+  // cannot read. Either mistake would have every device in every unlimited room
+  // asking the server to end a phase that has no end.
+  assert.equal(mayExpire(null, NOW), false);
+  assert.equal(mayExpire(undefined, NOW), false);
+  assert.equal(mayExpire("", NOW), false);
+  assert.equal(mayExpire("later", NOW), false);
+
+  // The grace is a parameter rather than a constant read inside the function, so
+  // the boundary itself can be tested instead of inferred from 1500. Both the
+  // countdown and `expireRound` use the default.
+  assert.equal(mayExpire(at(0), NOW, 0), true);
+  assert.equal(mayExpire(at(1), NOW, 0), false);
+});
+
+test("the clock reads mm:ss and never reads negative", () => {
+  assert.equal(formatClock(null), "", "nothing to draw, rather than '0:00' in an untimed room");
+  assert.equal(formatClock(0), "0:00");
+  assert.equal(formatClock(5), "0:05", "the seconds are always two digits");
+  assert.equal(formatClock(59), "0:59");
+  assert.equal(formatClock(60), "1:00");
+  assert.equal(formatClock(65), "1:05");
+  assert.equal(formatClock(300), "5:00", "the longest limit the lobby offers");
+  assert.equal(formatClock(3_600), "60:00", "minutes are not wrapped into hours");
+  assert.equal(formatClock(-3), "0:00");
+  assert.equal(formatClock(9.7), "0:09", "truncated, to match what `secondsLeft` hands over");
+});
+
+test("running out of time submits the middle, and the middle can still score", () => {
+  assert.equal(AUTO_MARKER, 50, "the dial's own default — what a silent player was looking at");
+  assert.equal(clampSlider(AUTO_MARKER), AUTO_MARKER, "a legal marker, not a sentinel value");
+  assert.equal(averageMarker([]), AUTO_MARKER, "the same middle the reveal already fell back to");
+
+  // Filled in rather than left out, which is the kind half of the rule: a team
+  // of three does not have its average dragged into a corner because one phone
+  // was slow, it has one ordinary marker added at dead centre.
+  assert.equal(averageMarker([40, 60, AUTO_MARKER]), 50);
+
+  // And it is a real attempt, not a forfeit. With the secret near the middle an
+  // auto-marker is a bullseye, which is correct rather than generous: a round is
+  // an average of a team, not a punishment for one person's connection.
+  assert.equal(scoreFor(50, AUTO_MARKER).pts, 5);
+  assert.equal(scoreFor(95, AUTO_MARKER).pts, -2, "and near an edge it costs, like any miss");
+});
+
+test("a clue nobody wrote leaves a round on the board and nothing on the card", () => {
+  // The host chose "record it as 0" over discarding the round, so a timed-out
+  // clue is revealed rather than deleted: the round number stands, it counts in
+  // `rounds_played`, and the table can see why it scored nothing. What it must
+  // not do is invent an attempt — nobody aimed at anything, so no marker and no
+  // `player_round_stats` row exists, and the end-of-game card has to fold a
+  // reveal with two empty lists in it without turning that into a zero average.
+  const timedOutClue = {
+    guesses: [],
+    bets: [],
+    team_points: { t1: 0, t2: 0 },
+    timed_out: "clue",
+  };
+  const realRound = {
+    guesses: [{ player_id: "a", player_name: "Ada", value: 48, distance: 4 }],
+    bets: [],
+  };
+
+  const rows = foldCalibration([timedOutClue, realRound, timedOutClue]);
+  assert.equal(rows.length, 1, "two timed-out rounds add nobody to the card");
+
+  const ada = rows[0];
+  assert.equal(ada.markers, 1, "one round was played, so one marker is counted");
+  assert.equal(ada.avgError, 4, "and the empty rounds do not average into it");
+  assert.equal(ada.best, 4);
+});
+
+test("a phase clock running out is counted the same way a skip is", () => {
+  // Same silent failure as the rescue hatches: an event the client fires but the
+  // ingest allowlist drops is a rule nobody can prove ever fired.
+  const stored = buildRows({
+    sessionId: "s1",
+    events: [
+      {
+        name: "timer_expired",
+        path: "/room/[code]",
+        props: { round: 4, phase: "clue" },
+        ts: Date.now(),
+      },
+    ],
+  });
+  assert.deepEqual(
+    stored.map((r) => r.name),
+    ["timer_expired"],
+    "timer_expired is not on the analytics allowlist"
+  );
+  assert.deepEqual(stored[0].props, { round: 4, phase: "clue" }, "the phase is the useful half");
+
+  const ts = new Date().toISOString();
+  const ev = (session_id: string, name: string) => ({
+    session_id,
+    name,
+    room_code: null,
+    path: "/room/[code]",
+    props: {},
+    ts,
+  });
+  const summary = foldEvents([ev("a", "timer_expired"), ev("b", "timer_expired")], "week");
+  const side = summary.side.find((s) => s.name === "timer_expired");
+  assert.equal(side?.events, 2);
+  assert.equal(side?.sessions, 2);
+
+  // And it has a plain-English label on the dashboard, which is a separate file
+  // and therefore a separate way to forget. Read out of the source because the
+  // map is local to a client component.
+  const page = readFileSync(join(process.cwd(), "src/app/analytics/page.tsx"), "utf8");
+  assert.match(page, /timer_expired:\s*"/, "the dashboard has no label for timer_expired");
 });

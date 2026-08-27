@@ -509,6 +509,119 @@ svg.gauge {
   accent-color: var(--accent);
 }
 
+/* ---- phase clocks ---- */
+
+/* Two pickers side by side, because they are one decision made twice. They
+   stack under 460px rather than shrinking: a select narrow enough to fit two
+   across a phone truncates "Unlimited" to something unreadable. */
+.timerpick {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+.timerpick .fl {
+  margin-top: 10px;
+}
+@media (max-width: 460px) {
+  .timerpick {
+    grid-template-columns: 1fr;
+  }
+}
+
+.timer {
+  margin: 14px auto 4px;
+  max-width: 420px;
+}
+.timer-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+}
+.timer-label {
+  font-size: 12px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+/* Tabular figures so the digits do not shuffle sideways every second — a
+   countdown that jitters reads as broken even when it is perfectly correct. */
+.timer-clock {
+  /* Blockified anyway as a flex item, but stated outright: the pulse below is a
+     `transform`, and a transform on a plain inline element is silently ignored. */
+  display: inline-block;
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum";
+  font-size: 26px;
+  font-weight: 800;
+  line-height: 1.1;
+  color: var(--ink);
+}
+.timer-bar {
+  margin-top: 6px;
+  height: 6px;
+  border-radius: 99px;
+  background: var(--panel2);
+  overflow: hidden;
+}
+.timer-bar i {
+  display: block;
+  height: 100%;
+  border-radius: 99px;
+  background: var(--accent);
+  /* Matches the tick, so the bar glides instead of stepping. Width only —
+     transitioning `all` here would animate the colour changes too and blur the
+     moment the clock turns red, which is the one moment worth being abrupt. */
+  transition: width 250ms linear;
+}
+.timer-hurry {
+  margin-top: 6px;
+  text-align: center;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--warn);
+}
+
+.timer.warn .timer-clock {
+  color: var(--gold);
+}
+.timer.warn .timer-bar i {
+  background: var(--gold);
+}
+.timer.final .timer-clock,
+.timer.over .timer-clock {
+  color: var(--warn);
+}
+.timer.final .timer-bar i,
+.timer.over .timer-bar i {
+  background: var(--warn);
+}
+/* The pulse is the warning for anyone who cannot hear the beep: a phone on
+   silent, a laptop with no gesture yet, a room too loud to notice. Stopped
+   entirely under `prefers-reduced-motion` — the colour still carries it. */
+.timer.final .timer-clock {
+  animation: timerpulse 1s ease-in-out infinite;
+}
+@keyframes timerpulse {
+  0%,
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.55;
+    transform: scale(1.06);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .timer.final .timer-clock {
+    animation: none;
+  }
+  .timer-bar i {
+    transition: none;
+  }
+}
+
 /* room code / lobby */
 .roomcode {
   text-align: center;

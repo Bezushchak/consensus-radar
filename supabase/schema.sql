@@ -62,6 +62,12 @@ create table if not exists public.rooms (
   categories        text[] not null default array['general', 'analytics'],
   goal              int  not null default 20,          -- 0 = endless
   bets_enabled      boolean not null default true,
+  -- Per-phase time limits, in seconds. 0 = no clock, which is the default so
+  -- that a deploy changes nothing about how an existing room plays. Not
+  -- constrained here: the server clamps to the offered set before writing, and
+  -- a check constraint cannot be added idempotently to an already-live table.
+  clue_seconds      int  not null default 0,
+  guess_seconds     int  not null default 0,
   teams             jsonb not null default '[]'::jsonb,
   active_team_index int  not null default 0,
   round_no          int  not null default 0,
@@ -134,6 +140,12 @@ create table if not exists public.rounds (
   points          int,              -- points the active team earned
   revealed_target int,
   reveal_detail   jsonb,            -- per-player guesses + bet outcomes
+  -- When the clock on the CURRENT phase runs out. Null means no clock, either
+  -- because the room has none set or because the phase is `reveal`, which is
+  -- never timed. Rewritten on every phase change, so it is always the deadline
+  -- for the phase named in the column next to it — one row, no history, and
+  -- every device reads the same instant instead of counting its own seconds.
+  phase_deadline  timestamptz,
   created_at      timestamptz not null default now(),
   revealed_at     timestamptz
 );
@@ -268,6 +280,13 @@ alter table public.players            add column if not exists player_uid     te
 alter table public.player_round_stats add column if not exists player_uid     text;
 alter table public.rounds             add column if not exists scale_left_ua  text;
 alter table public.rounds             add column if not exists scale_right_ua text;
+
+-- Per-phase timers. The zero defaults are what make this migration invisible:
+-- every room that already exists comes back with no clock, exactly as it played
+-- before, and a host has to turn one on deliberately.
+alter table public.rooms              add column if not exists clue_seconds   int not null default 0;
+alter table public.rooms              add column if not exists guess_seconds  int not null default 0;
+alter table public.rounds             add column if not exists phase_deadline timestamptz;
 
 create index if not exists prs_uid_idx on public.player_round_stats (player_uid)
   where player_uid is not null;
