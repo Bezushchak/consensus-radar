@@ -11,6 +11,7 @@ import PlayView from "./PlayView";
 import Winner from "./Winner";
 import * as api from "@/lib/client/api";
 import { clearIdentity, loadIdentity } from "@/lib/client/identity";
+import { startTracking, trackRoom } from "@/lib/client/track";
 import { useRoom } from "@/lib/client/useRoom";
 import type { Identity, RoomState } from "@/lib/types";
 
@@ -42,6 +43,18 @@ export default function RoomClient({ code }: { code: string }) {
     adoptIdentity(loadIdentity(code));
     setReady(true);
   }, [code, adoptIdentity]);
+
+  // Instrument the room page itself, not just the screens that lead into it.
+  // `JoinGate` used to be the only thing here that started tracking, which was
+  // fine for a first visit and wrong for every later one: a player who already
+  // has a seat never sees the gate, so a reload — and phones reload a lot —
+  // produced a tab with no click listener, no `session_end`, and `room_code`
+  // null on everything it did send. Both calls are idempotent, so doing it here
+  // covers the reload without double-counting the first visit.
+  useEffect(() => {
+    startTracking();
+    trackRoom(code);
+  }, [code]);
 
   /** Runs a mutation and adopts the state the server hands back. */
   const run = useCallback<RunAction>(

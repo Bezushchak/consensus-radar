@@ -92,6 +92,19 @@ export interface Round {
   revealed_at: string | null;
 }
 
+/**
+ * One active-team marker, as shown to a player who is allowed to watch it
+ * before the reveal — the other teams, who have to bet on which side of it the
+ * secret sits. Served by its own endpoint rather than folded into `RoomState`,
+ * because the room state is one payload for everybody and this is not
+ * something everybody may see.
+ */
+export interface LiveGuess {
+  player_id: string;
+  player_name: string;
+  value: number;
+}
+
 /** Public progress row — the slider value itself stays server-side. */
 export interface GuessRow {
   id: string;

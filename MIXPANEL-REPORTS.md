@@ -1,0 +1,302 @@
+# Mixpanel: the whole tool, and the reports to build in it
+
+`ANALYTICS.md` says *what* is measured and *which* numbers are worth reporting.
+This document is the other half: what Mixpanel can actually do, and the exact
+configuration for each report, in the order worth building them.
+
+The project is close to empty today, so treat this as set-up rather than
+analysis. Every recipe below is written so it can be built now and read later.
+
+## Step zero: give it something to draw
+
+An empty report and a broken report look identical, so make one real game before
+believing anything.
+
+Open the app on a laptop and on a phone — two different devices, because one
+browser is one `distinct_id` and a funnel needs a host and a guest to be
+different people. Create a room on the laptop, join from the phone, put two
+people in each of two teams (the rule since `MIN_TEAM_SIZE`), and play until
+somebody wins. That single game emits every funnel event at least once.
+
+Then check **Data → Events** in the left sidebar. Events arrive within a minute.
+If nothing shows up, stop here and work through the verification order at the
+end of `ANALYTICS.md` — no report is worth configuring against a dead pipe.
+
+## What each part of Mixpanel is for
+
+Reports are created from **+ Create New** in the top-left. There are four core
+report types and they are all on the free plan.
+
+| Report | The question it answers | What it is for here |
+| --- | --- | --- |
+| **Insights** | How much, how often, what is the average | Points per round, rounds per game, what people choose in the create form. The general-purpose one. |
+| **Funnels** | Where do people stop | The only report that measures whether a group gets into a game at all. The most valuable one for this product. |
+| **Retention** | Do they come back | Weak here by construction — see the identity caveat — but the repeat-play version is meaningful. |
+| **Flows** | What do they do instead | Where a stuck room goes. Useful for reading a funnel drop-off after the funnel has told you which step is bleeding. |
+
+Three supporting things that are not reports:
+
+**Boards** are where saved reports live; every saved report belongs to one.
+Note the plan limit: on a free plan each user can save **five** reports total, so
+the build order below matters — the first five are the five to keep.
+
+**Lexicon** (Data → Lexicon) is the dictionary: display names, descriptions, and
+the ability to hide events. Worth twenty minutes because `guess_locked` means
+nothing to anyone but you, and because `pointer_heat` should be hidden from the
+event picker so it stops appearing in every dropdown.
+
+**Users / Cohorts** is a saved group of devices — "played more than one game",
+"only ever created a room and never started one". Cohorts can be used as a
+filter or a breakdown in any report, which is how a funnel becomes a comparison
+between two kinds of player.
+
+### The five words the UI assumes you know
+
+A **metric** is a **measurement** of a **behavior**. The behavior is the event or
+sequence; the measurement is how to count it — total events, unique users,
+conversion rate, or *aggregate property*, which is what you pick to average a
+number like `points`. A **breakdown** splits the result by a property. A
+**filter** narrows it: *global* filters apply to the whole report, *inline*
+filters (the `…` beside one event) apply to that event only. The distinction
+matters in funnels, where inline filters change who enters and global filters
+throw away finished conversions.
+
+## Set up once, before the reports
+
+**Project timezone.** Default is UTC. Set it to Europe/Kyiv in project settings,
+otherwise "today" ends at 3am and every daily number is cut in the wrong place.
+
+**Lexicon.** Give the nine funnel events readable display names, describe the
+two traps in the description field where they will be read (`round_revealed`
+fires once per watching device; `session_end` fires per page-hide), and hide
+`pointer_heat` and `mixpanel_probe`. Tag the funnel events with one tag so the
+event picker can filter to just them.
+
+**Two boards.** "Activation" and "Game quality". Reports are saved into boards,
+and deciding this first stops the reports piling up in one list.
+
+## The reports, in build order
+
+Each recipe is: what to configure, how to read it, and the trap.
+
+### 1 — Host funnel
+
+The number one thing this product can fail at is a group that never starts
+playing. This is the report that sees it.
+
+- **Type:** Funnels
+- **Steps:** `app_open` → `create_open` → `room_created` → `game_started` →
+  `clue_sent` → `game_finished`
+- **Conversion window:** 2 hours. A game is played in one sitting; the 7-day
+  default would count a room created on Monday and a game started on Thursday as
+  one success.
+- **Counting method:** Totals, not the default Uniques. Uniques lets a device
+  enter the funnel only once in the whole date range, which for a game people
+  play repeatedly measures "did your first ever attempt work". Totals measures
+  each attempt, which is the question.
+- **Ordering:** specific order (the default).
+- **Breakdown:** `device_type`.
+
+**Read it as:** `app_open → create_open` is whether the front page makes the
+offer clearly — a loss here is a landing-page problem, not a game problem.
+`create_open → room_created` should be nearly lossless; if it is not, cross-check
+`error_shown` where `where = create`. **`room_created → game_started` is the
+number to care about** — a group with a room that never plays. `game_started →
+clue_sent` is whether the first clue-giver understood their job.
+
+**Trap:** leave **Optimized Re-entry** off to begin with. Off, the funnel judges
+each attempt on its own and answers "did this attempt work". On, a host who
+failed and immediately retried counts as converted, which answers "did they
+eventually get a game going". Both are worth knowing; they are not the same
+number, and only one of them tells you the first try is broken.
+
+### 2 — Guest funnel
+
+Build it separately. A single funnel silently drops half the population, because
+the host never emits `joined` and a guest never emits `room_created`.
+
+- **Type:** Funnels
+- **Steps:** `join_open` → `joined` → `guess_locked` → `game_finished`
+- **Conversion window:** 2 hours. **Counting method:** Totals.
+- **Breakdown:** `device_type`, then `players` on `join_open`.
+
+**Start at `join_open`, not `app_open`.** A guest who taps a shared link lands on
+`/room/CODE` and never sees the front page, so they never emit `app_open` — a
+funnel starting there would quietly measure only the guests who typed the code in
+by hand.
+
+**Read it as:** `join_open → joined` is the seat-taking step, and the one that
+broke before. Breaking it down by `players` — how many people were already in the
+room when this person arrived — separates "first to arrive and unsure" from
+"joining a room that is visibly filling up".
+
+### 3 — Setup time
+
+- **Type:** Funnels, same steps as the host funnel
+- **Measurement:** Time to Convert → Median
+- **Step selection:** `app_open` → `clue_sent`
+
+The single best summary of friction: how long a room full of people spends not
+playing. One number, and it goes down when the product gets better. Use median
+rather than average — one abandoned tab left open for an hour ruins a mean.
+
+### 4 — The error queue
+
+- **Type:** Insights
+- **Metric:** `error_shown`, Total Events
+- **Breakdown:** `where`, then `message`
+- **Chart:** bar
+
+Check this before any other report, because everything else is downstream of it.
+It is a free bug report queue ordered by how many people hit each one, and the
+messages are the real strings the app showed on someone's phone.
+
+### 5 — Round quality
+
+- **Type:** Insights, four metrics on one chart
+- `round_revealed` → Aggregate Property → Average of `points`
+- `round_revealed` filtered to `points = 5` → Total Events (bullseyes)
+- `round_revealed` filtered to `points = -2` → Total Events (wrong side)
+- `round_revealed` filtered to **`distance >= 0`** → Average of `distance`
+
+**Read it as:** average points near 5 means the game is too easy; near 0 means
+clues are not landing. A rising wrong-side rate usually means confusing scale
+pairs rather than bad players.
+
+**Trap:** the `distance >= 0` filter is not optional. `-1` is the sentinel for
+"unknown" and it will drag the mean below zero. And every count on this event is
+inflated, because it fires once per device watching the reveal — the averages are
+unbiased, the counts are not. For a true round count use Supabase.
+
+### 6 — What people choose
+
+- **Type:** Insights
+- **Metric:** `room_created`, Unique Users
+- **Breakdown:** `cats`, then repeat for `goal`, `bets`, `teams`
+- **Chart:** pie
+
+Four small reports, or one report whose breakdown you change. Each one retires an
+argument about defaults: whether the analytics-team scales get used at all,
+whether the longer goals are ever chosen, whether opt-in side bets get turned on,
+whether anyone plays with more than two teams. Cross `goal` with `game_finished`
+to see whether the long games actually finish.
+
+### 7 — Dead ends and dead controls
+
+- **Type:** Insights
+- **Metric:** `click`, Total Events
+- **Breakdown:** `target`, then a second breakdown on `path`
+- **Chart:** table
+
+Every labelled control is captured by one delegated listener, so this table is
+complete without anyone remembering to instrument a button. Three rows to look at
+specifically: `copy-link` as a share of `room_created` is the share rate — whether
+codes travel by link or get read out loud; `reveal-now` is the host forcing a
+stuck round, which should now be rare; and `(unlabelled)` is people pressing
+things that were never meant to be pressed, which is where the confusion is.
+
+### 8 — Repeat play
+
+- **Type:** Insights
+- **Metric:** `game_started` (or `joined`), Unique Users, weekly
+- Plus the same event with Aggregate Property → Frequency per user
+
+More honest than a retention curve here. A tool used once is a curiosity; used
+weekly, it is a ritual. Build the Retention report too — born on `room_created`
+or `joined`, returning on `app_open`, weekly — but read it as a floor: one person
+on a laptop and a phone is two users, and a returning player who switched devices
+reads as churn.
+
+### 9 — Mobile versus desktop
+
+Not a separate report. Add `device_type` as a breakdown on the host funnel and
+leave it there. The two roles are physically different devices — the host is on a
+laptop, everyone else is on a phone — so any step where mobile converts
+noticeably worse is a mobile layout bug, and this is the highest-value slice
+available in the whole project.
+
+**If you are on the free plan and can only keep five:** the host funnel, the guest
+funnel, the error queue, round quality, and setup time. Configuration and clicks
+can be rebuilt in a minute when a specific question comes up.
+
+## Techniques worth knowing about
+
+The things that are not obvious from the report picker, each with a use here.
+
+**Formulas** (Insights → the `Σ` / formula button) let one report divide one
+metric by another. Completion rate is `A/B` with A = `game_finished` unique users
+and B = `game_started` unique users — a real ratio in one chart instead of two
+numbers you divide by hand.
+
+**Custom events** are a saved union of several events, so "did anything at all in
+a game" can be one behavior. **Custom properties** are computed expressions over
+existing properties, which is how a `words` count becomes a "short / medium /
+long clue" bucket without a code change.
+
+**Cohorts and View Users.** Click any point on any chart → View Users → save as a
+cohort. "Devices that created a room and never started a game" is the most useful
+cohort here; used as a funnel breakdown it shows what that group did differently.
+
+**Compare to past** (and "Percent Change over Baseline") turns any report into a
+before-and-after, which is how you check whether the two-per-team rule actually
+moved `room_created → game_started`. Do this before and after any release worth
+arguing about.
+
+**Find interesting segments**, at the bottom of a funnel or retention chart,
+searches every property for segments that convert unusually well or badly and
+mails you the statistically significant ones. Cheap, and it finds things nobody
+thought to break down by.
+
+**View as Flow.** Click a funnel step → View as Flow to see what the people who
+dropped off did instead. This is the "why" that a funnel cannot give you.
+
+**Exclusion steps** ("Exclude users who did…" under Advanced) build a funnel that
+disqualifies anyone who did something in between. Excluding `error_shown` between
+`room_created` and `game_started` splits the drop-off into "hit a visible error"
+and "just gave up", which are different problems.
+
+**Any Order and Hold Property Constant** (also under Advanced). Any Order for
+steps whose sequence is not meaningful. Hold Property Constant on `room_code`
+forces every step of a funnel to come from the *same room* — otherwise a person
+who created room A and started game B counts as a conversion. Worth turning on
+once you have more than a handful of rooms.
+
+**Saved behaviors** let the host funnel be reused as a single step inside an
+Insights report, so it can be plotted next to an unrelated metric.
+
+**First-time filter** on any event restricts it to the first time that device ever
+did it — the closest thing available to "new player" without accounts.
+
+**Typecasting** matters if a number arrives as a string. Ours are sent as real
+numbers, except `cats`, which is deliberately a string like `general+analytics`.
+
+**Caching.** Results are cached — a report on a short date range for up to
+12 hours. When a number looks stale, use the `…` menu → Refresh Data rather than
+concluding the pipeline is broken.
+
+### What is deliberately not available
+
+**Country and city breakdowns are empty**, and that is correct: `ip` is pinned to
+`"0"` so Mixpanel cannot resolve a location from a Vercel region and invent one
+for every player.
+
+**Session Replay** needs Mixpanel's browser SDK. The mirror runs server-side on
+purpose — ad blockers do not touch our own origin, and a meaningful share of
+browsers block Mixpanel's domain outright. Replay would cost that plus ~30 KB on
+every phone.
+
+**Group Analytics** keyed on `room_code` would make "the room" a unit of analysis
+rather than the device, which fits this product unusually well. It needs a paid
+plan and a `$group_key` on every event.
+
+**Experiments / A-B testing** needs a flag system the app does not have.
+
+## Before adding a report, check it is answerable
+
+Two questions look answerable and are not, because the data is on separate
+events: *do shorter clues score better* (`words` is on `clue_sent`, `points` is on
+`round_revealed`) and *which scales are hardest* (no event carries `scale_key`).
+Both are answerable in Supabase today — `v_scale_stats` and the Scales
+leaderboard — and `ANALYTICS.md` Part 3 lists what a code change would need to
+move them into Mixpanel. Do not build a creative report to work around a missing
+event; add the event or use the database.

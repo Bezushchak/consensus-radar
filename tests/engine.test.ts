@@ -25,6 +25,16 @@ import {
   teamsAtGoal,
   underStaffedTeams,
 } from "../src/lib/game/engine";
+import {
+  MAX_CLUE_WORDS,
+  MAX_WORD_LEN,
+  clueErrorKey,
+  clueTokens,
+  countClueWords,
+  validateClue,
+  type ClueReason,
+} from "../src/lib/game/clue";
+import { STRINGS, t as translate } from "../src/lib/i18n";
 import { cacheBust } from "../src/lib/client/api";
 import { findSeat } from "../src/lib/server/rooms";
 import { storedLabels } from "../src/lib/scales";
@@ -716,4 +726,136 @@ test("every read gets a URL no cache has seen before", () => {
   assert.ok(withQuery.includes("period=all"));
   assert.equal(withQuery.split("?").length, 2);
   assert.ok(/[?&]_=[0-9a-z]+$/.test(withQuery));
+});
+
+// ---- clue rules ----------------------------------------------------------
+
+/** Asserts a clue is rejected and hands back why, narrowed. */
+function clueFail(text: string): { reason: ClueReason; word: string | null } {
+  const check = validateClue(text);
+  if (check.ok) throw new Error(`expected ${JSON.stringify(text)} to be rejected, it passed`);
+  return { reason: check.reason, word: check.word };
+}
+
+/** Asserts a clue passes and hands back the text that would be stored. */
+function clueOk(text: string): string {
+  const check = validateClue(text);
+  if (!check.ok) throw new Error(`expected ${JSON.stringify(text)} to pass, got ${check.reason}`);
+  return check.clue;
+}
+
+test("a number is a number however it is written", () => {
+  // Digits, and digits welded into a word.
+  assert.equal(clueFail("level 5").reason, "digits");
+  assert.equal(clueFail("level5").reason, "digits");
+  // Not only ASCII: fractions and the Roman numeral characters live in the
+  // wider Unicode number categories, which is why the test is \p{N} and not
+  // \p{Nd}. The code point is spelled out so the intent survives a paste —
+  // U+2169 is ROMAN NUMERAL TEN, not the letter X.
+  assert.equal(clueFail("½ way there").reason, "digits");
+  assert.equal(clueFail(`${String.fromCodePoint(0x2169)} marks it`).reason, "digits");
+
+  // Spelled out, both languages, including inflected Ukrainian.
+  assert.deepEqual(clueFail("forty degrees"), { reason: "numberWord", word: "forty" });
+  assert.deepEqual(clueFail("halfway up"), { reason: "numberWord", word: "halfway" });
+  assert.deepEqual(clueFail("другий раз"), { reason: "numberWord", word: "другий" });
+  assert.equal(clueFail("п'ятдесят відсотків").word, "п'ятдесят");
+
+  // And a number word hiding inside a glued token is reported as a number,
+  // which is the more useful of the two things wrong with it.
+  assert.deepEqual(clueFail("halfthewaydown"), { reason: "numberWord", word: "half" });
+
+  // The collisions the word lists are built around: "друг" is a friend, not a
+  // second, and "п'ятниця" is Friday, not a five.
+  clueOk("друг сказав");
+  clueOk("п'ятниця ввечері");
+  clueOk("майже посередині");
+  clueOk("very warm indeed");
+});
+
+test("the word cap counts meaning, not grammar", () => {
+  // Six words that carry meaning, with articles and prepositions on top.
+  assert.equal(countClueWords("the cold and the wet of a grey damp miserable evening"), 6);
+  clueOk("the cold and the wet of a grey damp miserable evening");
+
+  // Seven does not fit.
+  assert.equal(clueFail("cold wet grey damp miserable evening again").reason, "tooManyWords");
+
+  // Nor does stuffing the box with free words to get around the cap.
+  assert.equal(clueFail(new Array(13).fill("the").join(" ")).reason, "tooManyWords");
+
+  // Whitespace is collapsed before anything is counted, and the cleaned text
+  // is what would be stored.
+  assert.equal(clueOk("  totally   fine  "), "totally fine");
+  assert.equal(clueFail("   ").reason, "empty");
+});
+
+test("punctuation between words does not hide them", () => {
+  // No rule per character: a separator is anything that is not a letter, so
+  // every one of these is four words, decided without any guessing.
+  const want = ["so", "like", "this", "word"];
+  assert.deepEqual(clueTokens("so-like-this-word"), want);
+  assert.deepEqual(clueTokens("so.like.this.word"), want);
+  assert.deepEqual(clueTokens("so_like_this_word"), want);
+  assert.deepEqual(clueTokens("so/like/this/word"), want);
+  assert.deepEqual(clueTokens("So — Like … This! Word?"), want);
+
+  // Apostrophes are part of a word, though, or Ukrainian numerals would stop
+  // matching the moment a phone substituted a curly one.
+  assert.deepEqual(clueTokens("п’ять"), ["п'ять"]);
+  assert.deepEqual(clueTokens("don't"), ["don't"]);
+});
+
+test("words glued together are caught, long real words are not", () => {
+  assert.deepEqual(clueFail("solikethisword"), { reason: "gluedWord", word: "solikethisword" });
+  assert.equal(clueFail("thisisthewordyouwant").reason, "gluedWord");
+  assert.equal(clueFail("дужедалековгору").reason, "gluedWord");
+
+  // Zero-width characters are invisible to the guessers, so they are stripped
+  // rather than treated as separators — otherwise the screen would read as one
+  // word while the counter said four.
+  const zeroWidth = String.fromCharCode(0x200b);
+  assert.equal(clueFail(`so${zeroWidth}likethisword`).reason, "gluedWord");
+
+  // The whole point: real words are longer than the glued one and still pass,
+  // because they do not decompose into common short words at all.
+  clueOk("responsibility");
+  clueOk("characteristic");
+  clueOk("відповідальність");
+  clueOk("непередбачуваність");
+  // And the handful of real words that do decompose are named explicitly.
+  clueOk("nevertheless");
+
+  // A token no language has is rejected on length alone.
+  assert.equal(clueFail("x".repeat(MAX_WORD_LEN + 1)).reason, "longWord");
+  clueOk("x".repeat(MAX_WORD_LEN));
+});
+
+test("every clue rejection can actually be shown to the player", () => {
+  const reasons: ClueReason[] = [
+    "empty",
+    "digits",
+    "numberWord",
+    "longWord",
+    "gluedWord",
+    "tooManyWords",
+  ];
+
+  for (const reason of reasons) {
+    const { key, vars } = clueErrorKey({ ok: false, reason, word: "solikethisword", words: 9 });
+    assert.ok(STRINGS[key], `${reason} maps to "${key}", which is not in the dictionary`);
+    for (const lang of ["ua", "en"] as const) {
+      const out = translate(lang, key, vars);
+      assert.ok(out.length > 0, `${key} is empty in ${lang}`);
+      assert.ok(!/\{\w+\}/.test(out), `${key} in ${lang} left a placeholder unfilled: ${out}`);
+    }
+  }
+
+  // The two strings the composer fills in itself, same check.
+  for (const key of ["clueRules", "clueWordCount"]) {
+    for (const lang of ["ua", "en"] as const) {
+      const out = translate(lang, key, { count: 3, max: MAX_CLUE_WORDS });
+      assert.ok(!/\{\w+\}/.test(out), `${key} in ${lang} left a placeholder unfilled: ${out}`);
+    }
+  }
 });

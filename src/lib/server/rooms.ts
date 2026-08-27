@@ -11,7 +11,6 @@ import {
   MIN_TEAM_SIZE,
   averageMarker,
   betIsCorrect,
-  cleanClue,
   cleanName,
   cleanUid,
   clampSlider,
@@ -29,6 +28,8 @@ import {
   teamsAtGoal,
   underStaffedTeams,
 } from "../game/engine";
+import { clueErrorKey, validateClue } from "../game/clue";
+import { t } from "../i18n";
 import { scalePool } from "./scales";
 import type {
   BetRow,
@@ -36,6 +37,7 @@ import type {
   GuessRow,
   Identity,
   Lang,
+  LiveGuess,
   Player,
   RevealDetail,
   Room,
@@ -561,15 +563,90 @@ export async function getSecretTarget(code: string, playerId: string, token: str
   return { roundId: round.id, target: data.target as number };
 }
 
+/**
+ * The active team's markers while the round is still open, for a player who is
+ * entitled to watch them.
+ *
+ * Who that is, and why:
+ *
+ *   - the other teams, yes. They have to bet on which side of the marker the
+ *     secret sits, and in the board game they can see exactly where the dial
+ *     was left before they call it. Hiding the markers made that bet a coin
+ *     flip; showing them makes it a judgement.
+ *   - the active team, no — not even the clue-giver. Each guesser placing a
+ *     marker without seeing their teammates' is the whole mechanic: the score
+ *     comes from the average, so a guesser who can see the others would anchor
+ *     on them and the round would measure agreement instead of calibration.
+ *
+ * Served from its own endpoint, like the secret target, rather than added to
+ * `RoomState`. The room state is one payload built once and handed to
+ * everybody, so anything only some players may see cannot live in it; the
+ * values stay in `guess_values`, which `getState` never reads.
+ */
+export async function getLiveGuesses(
+  code: string,
+  playerId: string,
+  token: string
+): Promise<{ roundId: string; guesses: LiveGuess[] }> {
+  const { room, player } = await authenticate(code, playerId, token);
+  const round = await requireCurrentRound(room);
+  if (round.phase !== "guess") throw new ApiError(409, "The round is not taking guesses");
+  if (player.team_id === round.team_id) {
+    throw new ApiError(403, "Your own team's markers stay hidden until the reveal");
+  }
+
+  const { data: rows, error } = await admin()
+    .from("guesses")
+    .select("id, player_id, player_name, submitted_at")
+    .eq("round_id", round.id)
+    .eq("team_id", round.team_id)
+    .order("submitted_at", { ascending: true });
+  if (error) throw new ApiError(500, error.message);
+
+  const ids = (rows ?? []).map((r: { id: string }) => r.id);
+  if (ids.length === 0) return { roundId: round.id, guesses: [] };
+
+  const { data: vals, error: valErr } = await admin()
+    .from("guess_values")
+    .select("guess_id, value")
+    .in("guess_id", ids);
+  if (valErr) throw new ApiError(500, valErr.message);
+
+  const byGuess = new Map<string, number>();
+  for (const v of (vals ?? []) as { guess_id: string; value: number }[]) {
+    byGuess.set(v.guess_id, v.value);
+  }
+
+  // A guess row with no value is a half-finished write, not a marker at zero,
+  // so it is dropped rather than drawn in the wrong place.
+  const guesses = (rows ?? [])
+    .map((r: { id: string; player_id: string; player_name: string }) => {
+      const value = byGuess.get(r.id);
+      return value === undefined
+        ? null
+        : { player_id: r.player_id, player_name: r.player_name, value };
+    })
+    .filter((g): g is LiveGuess => g !== null);
+
+  return { roundId: round.id, guesses };
+}
+
 export async function submitClue(code: string, playerId: string, token: string, clue: unknown) {
   const { room, player } = await authenticate(code, playerId, token);
   const round = await requireCurrentRound(room);
   if (round.clue_giver_id !== player.id) throw new ApiError(403, "You are not the clue-giver");
   if (round.phase !== "clue") throw new ApiError(409, "The clue was already given");
 
-  const text = cleanClue(clue);
-  if (text.length < 1) throw new ApiError(400, "The clue cannot be empty");
-  if (/\d/.test(text)) throw new ApiError(400, "No numbers in the clue — that's the whole game!");
+  // The same validator the input box runs, so a player who gets past the form
+  // — an old tab, a replayed request, a hand-rolled call — meets exactly the
+  // rule they were shown rather than a looser one. Rendered in the room's
+  // language because that is the only language this response has.
+  const check = validateClue(clue);
+  if (!check.ok) {
+    const { key, vars } = clueErrorKey(check);
+    throw new ApiError(400, t(room.lang, key, vars));
+  }
+  const text = check.clue;
 
   const { error } = await admin()
     .from("rounds")
@@ -756,18 +833,21 @@ async function revealRound(room: Room, round: Round): Promise<void> {
   // Points per team: active team gets the band score; other teams get one
   // point if the majority of their players called the side correctly.
   const teamPoints: Record<string, number> = {};
-  for (const t of room.teams) teamPoints[t.id] = 0;
+  for (const team of room.teams) teamPoints[team.id] = 0;
   teamPoints[round.team_id] = pts;
 
-  for (const t of room.teams) {
-    if (t.id === round.team_id) continue;
-    const mine = detailBets.filter((b) => b.team_id === t.id);
+  for (const team of room.teams) {
+    if (team.id === round.team_id) continue;
+    const mine = detailBets.filter((b) => b.team_id === team.id);
     if (mine.length === 0) continue;
     const right = mine.filter((b) => b.correct).length;
-    if (right * 2 > mine.length) teamPoints[t.id] += BET_POINTS;
+    if (right * 2 > mine.length) teamPoints[team.id] += BET_POINTS;
   }
 
-  const teams = room.teams.map((t) => ({ ...t, score: t.score + (teamPoints[t.id] ?? 0) }));
+  const teams = room.teams.map((team) => ({
+    ...team,
+    score: team.score + (teamPoints[team.id] ?? 0),
+  }));
   const detail: RevealDetail = { guesses: detailGuesses, bets: detailBets, team_points: teamPoints };
 
   const { error: roundErr } = await admin()
@@ -901,8 +981,8 @@ async function finishGame(room: Room, teams: Team[]): Promise<void> {
     .eq("room_id", room.id)
     .not("revealed_at", "is", null);
 
-  const rows = teams.map((t) => {
-    const mine = (rounds ?? []).filter((r: { team_id: string }) => r.team_id === t.id);
+  const rows = teams.map((team) => {
+    const mine = (rounds ?? []).filter((r: { team_id: string }) => r.team_id === team.id);
     const distances = mine
       .map((r: { distance: number | null }) => r.distance)
       .filter((d: number | null): d is number => d !== null);
@@ -912,12 +992,12 @@ async function finishGame(room: Room, teams: Team[]): Promise<void> {
         : null;
     return {
       room_code: room.code,
-      team_name: t.name,
-      score: t.score,
+      team_name: team.name,
+      score: team.score,
       rounds_played: mine.length,
       avg_distance: avg,
-      is_winner: top ? t.id === top.id : false,
-      player_names: players.filter((p) => p.team_id === t.id).map((p) => p.name),
+      is_winner: top ? team.id === top.id : false,
+      player_names: players.filter((p) => p.team_id === team.id).map((p) => p.name),
       goal: room.goal,
     };
   });

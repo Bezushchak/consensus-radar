@@ -146,6 +146,16 @@ label.fl {
   margin: 14px 0 6px;
   font-weight: 600;
 }
+/* The live clue word count sits in the label, not under the input, so it is
+   visible while typing without shifting the Send button up and down. */
+label.fl .count {
+  float: right;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+}
+label.fl .count.over {
+  color: #ff7a9c;
+}
 input[type="text"],
 select,
 textarea {

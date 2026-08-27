@@ -66,6 +66,31 @@ export const STRINGS: Dict = {
   cluePlaceholder: { ua: "Напишіть clue…", en: "Type your clue…" },
   sendClue: { ua: "Надіслати clue команді", en: "Send the clue to the team" },
   noNumbers: { ua: "Без цифр у clue — у цьому вся гра!", en: "No numbers in the clue — that's the whole game!" },
+  // One message per rejection reason, so the player is told what to change
+  // rather than that something is wrong. The keys are chosen by
+  // `clueErrorKey` in src/lib/game/clue.ts — keep the two in step.
+  clueEmpty: { ua: "Clue не може бути порожнім.", en: "The clue cannot be empty." },
+  clueNumberWord: {
+    ua: "Числа словами теж не можна — «{word}» це число.",
+    en: "Numbers spelled out count too — “{word}” is a number.",
+  },
+  clueTooMany: {
+    ua: "Максимум {max} слів, а тут {count}. Артиклі та прийменники не рахуються.",
+    en: "Up to {max} words, and this has {count}. Articles and prepositions are free.",
+  },
+  clueGlued: {
+    ua: "«{word}» схоже на кілька слів, склеєних разом — розділіть їх пробілами.",
+    en: "“{word}” looks like several words glued together — put spaces between them.",
+  },
+  clueLongWord: {
+    ua: "«{word}» задовге для одного слова (максимум {max} символів).",
+    en: "“{word}” is too long to be one word (max {max} characters).",
+  },
+  clueRules: {
+    ua: "До {max} слів, без чисел. Артиклі та прийменники не рахуються.",
+    en: "Up to {max} words, no numbers. Articles and prepositions are free.",
+  },
+  clueWordCount: { ua: "{count} з {max}", en: "{count} of {max}" },
   waitClue: { ua: "{name} придумує clue…", en: "{name} is thinking of a clue…" },
   youGiveClue: { ua: "Ви даєте clue цього раунду", en: "You're the clue-giver this round" },
   clueGiverIs: { ua: "Clue дає {name} ({team})", en: "{name} from {team} gives the clue" },
@@ -80,6 +105,12 @@ export const STRINGS: Dict = {
   marker: { ua: "Маркер", en: "Marker" },
   submittedCount: { ua: "Зафіксували: {done} з {total}", en: "Locked in: {done} of {total}" },
   watchingTitle: { ua: "Команда «{team}» відгадує", en: "Team \"{team}\" is guessing" },
+  // Shown only to a team that is watching, not guessing. Their markers are
+  // visible to you precisely because you have to bet on them.
+  watchMarkers: {
+    ua: "Ви бачите їхні маркери — вони з'являються на радарі. Свої вони одне одного не бачать.",
+    en: "You can see their markers appear on the dial. They cannot see each other's.",
+  },
   betTitle: { ua: "Ваша ставка", en: "Your side bet" },
   betSub: { ua: "З якого боку від таємної точки стане маркер?", en: "Which side of the secret spot will their marker land on?" },
   betLeft: { ua: "◀ Лівіше", en: "◀ To the left" },

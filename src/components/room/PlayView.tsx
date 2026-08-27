@@ -1,14 +1,15 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import Gauge from "@/components/Gauge";
 import { useLang } from "@/components/LangProvider";
 import Poles from "@/components/Poles";
 import * as api from "@/lib/client/api";
 import { track } from "@/lib/client/track";
-import { scoreFor } from "@/lib/game/engine";
+import { MAX_CLUE_WORDS, clueErrorKey, validateClue, type ClueReason } from "@/lib/game/clue";
+import { CLUE_MAX_LEN, scoreFor } from "@/lib/game/engine";
 import type { RunAction } from "./RoomClient";
-import type { Identity, Player, RoomState, Round } from "@/lib/types";
+import type { Identity, LiveGuess, Player, RoomState, Round } from "@/lib/types";
 
 export default function PlayView({
   code,
@@ -68,6 +69,71 @@ export default function PlayView({
   );
   const myGuess = guesses.find((g) => g.player_id === me.id) ?? null;
   const myBet = bets.find((b) => b.player_id === me.id) ?? null;
+
+  // ---- the active team's markers: only ever fetched by a watching team ----
+  //
+  // The room state carries who has answered but not what they answered, so the
+  // values come from their own endpoint, which refuses the team that is
+  // guessing. Refetched on any change to the guess set — including a re-submit,
+  // which leaves the row count alone and only moves `submitted_at`.
+  const amWatcher = round.phase === "guess" && !amOnActiveTeam;
+  const guessSig = useMemo(
+    () =>
+      guesses
+        .map((g) => `${g.player_id}:${g.submitted_at}`)
+        .sort()
+        .join("|"),
+    [guesses]
+  );
+  const submitted = guesses.length;
+  const [watched, setWatched] = useState<LiveGuess[]>([]);
+  useEffect(() => {
+    if (!amWatcher) {
+      setWatched([]);
+      return;
+    }
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    let tries = 0;
+
+    const load = () => {
+      api
+        .fetchLiveGuesses(code, identity)
+        .then((res) => {
+          // A response for the previous round would draw needles belonging to
+          // a dial nobody is looking at any more.
+          if (cancelled || res.roundId !== round.id) return;
+          setWatched(res.guesses);
+          // A guess row is written before its value is, so a fetch that lands
+          // between the two sees a guesser with no marker. Ask again — twice
+          // at most, so a value that is genuinely missing cannot turn into a
+          // polling loop.
+          if (res.guesses.length < submitted && ++tries <= 2) {
+            timer = setTimeout(load, 500);
+          }
+        })
+        .catch(() => {
+          if (!cancelled) setWatched([]);
+        });
+    };
+    load();
+
+    return () => {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [amWatcher, code, identity, round.id, guessSig, submitted]);
+
+  const watchedGhosts = useMemo(
+    () => watched.map((g) => ({ value: g.value, label: g.player_name })),
+    [watched]
+  );
+  const watchedValues = useMemo(() => {
+    const byPlayer: Record<string, number> = {};
+    for (const g of watched) byPlayer[g.player_id] = g.value;
+    return byPlayer;
+  }, [watched]);
 
   const [slider, setSlider] = useState(50);
   useEffect(() => setSlider(50), [round.id]);
@@ -150,8 +216,14 @@ export default function PlayView({
 
         <Poles round={round} />
         <div className="gaugewrap">
-          <Gauge target={amClueGiver ? targetForMe : null} marker={amGuesser ? slider : null} />
+          <Gauge
+            target={amClueGiver ? targetForMe : null}
+            marker={amGuesser ? slider : null}
+            ghosts={watchedGhosts}
+          />
         </div>
+
+        {amWatcher ? <p className="sub center">{t("watchMarkers")}</p> : null}
 
         {amGuesser ? (
           <>
@@ -201,7 +273,16 @@ export default function PlayView({
                 disabled={busy}
                 onClick={async () => {
                   const res = await run("bet", { side: "left" });
-                  if (res) track("bet_placed", { side: "left", round: round.round_no });
+                  // `markers` is how much of the other team's answer was on
+                  // screen when the call was made — the number that says
+                  // whether showing the markers changed the bet or just
+                  // decorated it.
+                  if (res)
+                    track("bet_placed", {
+                      side: "left",
+                      round: round.round_no,
+                      markers: watched.length,
+                    });
                 }}
               >
                 {t("betLeft")}
@@ -212,7 +293,12 @@ export default function PlayView({
                 disabled={busy}
                 onClick={async () => {
                   const res = await run("bet", { side: "right" });
-                  if (res) track("bet_placed", { side: "right", round: round.round_no });
+                  if (res)
+                    track("bet_placed", {
+                      side: "right",
+                      round: round.round_no,
+                      markers: watched.length,
+                    });
                 }}
               >
                 {t("betRight")}
@@ -236,6 +322,7 @@ export default function PlayView({
               done: guesses.length,
               total: expectedGuessers.length,
             })}
+            values={watchedValues}
           />
         )}
 
@@ -373,23 +460,42 @@ function ClueComposer({
 }) {
   const { t } = useLang();
   const [clue, setClue] = useState("");
-  const [warn, setWarn] = useState<string | null>(null);
 
   useEffect(() => {
     setClue("");
-    setWarn(null);
   }, [round.id]);
 
-  async function send() {
-    const text = clue.trim();
-    if (!text) return;
-    if (/\d/.test(text)) {
-      setWarn(t("noNumbers"));
-      return;
+  // The same validator the server runs, re-run on every keystroke. Live and
+  // not on submit, because a player told at the seventh word is editing a
+  // phrase while a player told after pressing Send is starting over.
+  const check = useMemo(() => validateClue(clue), [clue]);
+
+  // An empty box is not a mistake yet, so that one reason stays silent.
+  const problem = check.ok || check.reason === "empty" ? null : clueErrorKey(check);
+
+  // Remember the first rule that got in the way, and report it with the clue
+  // that eventually goes out. That is the number that says whether the rules
+  // are calibrated or merely annoying, and it costs no extra events.
+  const blocked = useRef<ClueReason | null>(null);
+  useEffect(() => {
+    blocked.current = null;
+  }, [round.id]);
+  useEffect(() => {
+    if (!check.ok && check.reason !== "empty" && !blocked.current) {
+      blocked.current = check.reason;
     }
-    setWarn(null);
-    const res = await run("clue", { clue: text });
-    if (res) track("clue_sent", { round: round.round_no, words: text.split(/\s+/).length });
+  }, [check]);
+
+  async function send() {
+    if (!check.ok) return;
+    const res = await run("clue", { clue: check.clue });
+    if (res) {
+      track("clue_sent", {
+        round: round.round_no,
+        words: check.words,
+        ...(blocked.current ? { blocked: blocked.current } : {}),
+      });
+    }
   }
 
   return (
@@ -413,25 +519,31 @@ function ClueComposer({
 
       <label className="fl" htmlFor="clue">
         {t("clueLabel")}
+        <span className={check.words > MAX_CLUE_WORDS ? "count over" : "count"}>
+          {t("clueWordCount", { count: check.words, max: MAX_CLUE_WORDS })}
+        </span>
       </label>
       <input
         id="clue"
         type="text"
         value={clue}
-        maxLength={120}
+        maxLength={CLUE_MAX_LEN}
         placeholder={t("cluePlaceholder")}
         onChange={(e) => setClue(e.target.value)}
         onKeyDown={(e) => {
           if (e.key === "Enter") void send();
         }}
       />
-      {warn ? <div className="err">{warn}</div> : null}
+      <p className="sub" style={{ margin: "8px 0 0" }}>
+        {t("clueRules", { max: MAX_CLUE_WORDS })}
+      </p>
+      {problem ? <div className="err">{t(problem.key, problem.vars)}</div> : null}
 
       <div className="actions">
         <button
           className="btn wide"
           data-ev="send-clue"
-          disabled={busy || clue.trim().length === 0}
+          disabled={busy || !check.ok}
           onClick={send}
         >
           {t("sendClue")}
@@ -445,10 +557,13 @@ function Progress({
   expected,
   submittedIds,
   label,
+  /** Marker per player — passed only for viewers allowed to see them. */
+  values,
 }: {
   expected: Player[];
   submittedIds: string[];
   label: string;
+  values?: Record<string, number>;
 }) {
   if (expected.length === 0) return null;
   const done = new Set(submittedIds);
@@ -458,12 +573,22 @@ function Progress({
         {label}
       </p>
       <div className="chiplist" style={{ justifyContent: "center" }}>
-        {expected.map((p) => (
-          <span key={p.id} className={`chip${done.has(p.id) ? " done" : ""}`}>
-            {done.has(p.id) ? "✓ " : "… "}
-            {p.name}
-          </span>
-        ))}
+        {expected.map((p) => {
+          const answered = done.has(p.id);
+          const value = values?.[p.id];
+          return (
+            <span key={p.id} className={`chip${answered ? " done" : ""}`}>
+              {answered ? "✓ " : "… "}
+              {p.name}
+              {value === undefined ? null : (
+                <>
+                  {" · "}
+                  <b>{value}%</b>
+                </>
+              )}
+            </span>
+          );
+        })}
       </div>
     </>
   );

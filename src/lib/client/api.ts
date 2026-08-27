@@ -1,7 +1,7 @@
 "use client";
 
 import { deviceUid } from "./identity";
-import type { Identity, RoomState } from "../types";
+import type { Identity, LiveGuess, RoomState } from "../types";
 
 /** Thin typed wrapper around the backend. All errors surface as ApiCallError. */
 
@@ -109,6 +109,14 @@ export function verifyMembership(code: string, identity: Identity) {
 export function fetchSecret(code: string, identity: Identity) {
   return request<{ roundId: string; target: number }>(
     `/api/rooms/${encodeURIComponent(code)}/secret`,
+    { identity }
+  );
+}
+
+/** The active team's markers, for a watching team. 403 for the active team. */
+export function fetchLiveGuesses(code: string, identity: Identity) {
+  return request<{ roundId: string; guesses: LiveGuess[] }>(
+    `/api/rooms/${encodeURIComponent(code)}/watch`,
     { identity }
   );
 }

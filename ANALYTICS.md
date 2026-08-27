@@ -23,7 +23,7 @@ always trustworthy:
 | `distinct_id`, `$device_id` | The browser's device id — a person, approximately. See Identity below. |
 | `session_id` | Random per browser tab, from `sessionStorage`. A visit, not a person. |
 | `path` | Page, with the room code stripped: `/room/GSTE` is recorded as `/room/[code]`. |
-| `room_code` | The room, once the player is in one. |
+| `room_code` | The room, once the player is in one. Set by the room page on mount, so it survives a reload — it used to be set only by the join gate, which a returning player never sees. |
 | `lang` | `ua` or `en`, as chosen in the UI. |
 | `device_type` | `mobile` or `desktop`, decided by a 760px media query. Not `$device`, which Mixpanel parses from a user agent we never send. |
 | `source` | Always `consensus-radar`. |
@@ -45,7 +45,7 @@ Nine funnel events, in the order a player meets them:
 | `room_created` | The room exists | host | `teams`, `goal`, `bets`, `cats` (`general+analytics`) |
 | `joined` | A player takes a seat | that player | `from` (`home` / `gate`), `resumed`, `picked_team` |
 | `game_started` | The host presses Start | host | `players`, `teams` (teams with enough people to play) |
-| `clue_sent` | A clue-giver submits | the clue-giver only | `round`, `words` |
+| `clue_sent` | A clue-giver submits | the clue-giver only | `round`, `words` (words that count, free ones excluded), `blocked` — present only if a clue rule stopped them on the way |
 | `guess_locked` | A player locks a marker | that guesser only | `round`, `changed` — was an earlier marker replaced |
 | `round_revealed` | The reveal appears | **every device watching** | `round`, `points`, `distance` (`-1` when unknown) |
 | `game_finished` | The winner screen appears | every device | `rounds`, `score` |
@@ -57,7 +57,7 @@ And eight that are useful but never gate a later step:
 | `join_open` | `players` | Saw the join screen. May or may not join. |
 | `leaderboard_open` | — | Once per session per page. |
 | `lang_switched` | `to` | |
-| `bet_placed` | `side`, `round` | Only when side bets are enabled for the room. |
+| `bet_placed` | `side`, `round`, `markers` | Only when side bets are enabled for the room. `markers` is how many of the guessing team's markers were on screen when the call was made. |
 | `click` | `target`, `tag` | `target` is the control's `data-ev` label; see below. |
 | `error_shown` | `where`, `message` | `where` is `create`, `join-home` or `join-gate`. |
 | `session_end` | `seconds` | Fires on every page-hide, not once per visit. |
@@ -65,11 +65,17 @@ And eight that are useful but never gate a later step:
 
 Clicks are captured by one delegated listener, so every labelled control is
 already measured without anyone remembering to instrument it. The labels that
-exist: `create-room`, `join-by-code`, `join-room`, `resume-room`, `copy-link`,
-`pick-team`, `switch-team`, `save-settings`, `start-game`, `send-clue`,
-`bet-left`, `bet-right`, `reveal-now`, `next-round`, `play-again`,
-`winner-leaderboard`. An unlabelled but interactive click is recorded as
-`(unlabelled)` with its tag name, so dead ends still surface.
+exist, by screen: `resume-room`, `create-room`, `join-by-code` on the front page;
+`pick-team`, `join-room` on the join gate; `copy-link`, `switch-team`,
+`save-settings`, `start-game` in the lobby; `send-clue`, `submit-guess`,
+`change-guess`, `bet-left`, `bet-right`, `reveal-now`, `next-round` in play;
+`play-again`, `winner-leaderboard` on the winner screen; and `lb-board-<teams |
+rounds | players | scales>` and `lb-period-<all | week | month>` on the
+leaderboard. The guess button reports `submit-guess` the first time and
+`change-guess` when a marker is being replaced, which is the same information
+`guess_locked.changed` carries and a useful cross-check on it. An unlabelled but
+interactive click is recorded as `(unlabelled)` with its tag name, so dead ends
+still surface.
 
 ### Identity, and what it costs
 
@@ -104,6 +110,11 @@ should not be labelled as such.
 
 ## Part 2 — The metrics worth reporting
 
+For the click-by-click configuration of each report named below — report type,
+steps, conversion window, counting method, breakdown — plus a tour of the parts of
+Mixpanel that are not obvious from the report picker, see `MIXPANEL-REPORTS.md`.
+This part says which numbers matter; that document says how to build them.
+
 ### Activation: does a group get into a game at all
 
 This is the most valuable thing to watch, because the failure mode of a
@@ -117,8 +128,13 @@ Host funnel (Mixpanel → Funnels, "in this order", 1-day window):
 `app_open` → `create_open` → `room_created` → `game_started` → `clue_sent` →
 `round_revealed` → `game_finished`.
 
-Guest funnel: `app_open` → `join_open` → `joined` → `guess_locked` →
-`round_revealed`.
+Guest funnel: `join_open` → `joined` → `guess_locked` → `round_revealed`. It
+starts at `join_open` and not at `app_open` on purpose: a guest who taps a shared
+link lands on `/room/CODE` and never sees the front page, so they never emit
+`app_open`, and a funnel that begins there would quietly measure only the guests
+who typed the code in by hand. How guests arrive is a separate question, answered
+by `joined` broken down by `from` — `gate` for a link, `home` for a typed code,
+and undefined on a resumed seat, which sends `resumed` instead.
 
 Read the host funnel as product decisions:
 
@@ -148,6 +164,7 @@ long a room full of people spends not playing.
 | Players per game | Insights → `game_started`, breakdown by `players` | Post-`MIN_TEAM_SIZE` this should never be below 4. If it is, a stale client is still deployed. |
 | Marker changed before locking | `guess_locked` where `changed = true`, as a share of all | A proxy for how much thought the dial invites. Very low is worth a look — it can mean people cannot tell the control is draggable. |
 | Side-bet adoption | `bet_placed` unique users ÷ `game_started` unique users, filtered to rooms where `room_created.bets = true` | Answers whether an optional feature earns its complexity. |
+| Do watchers wait for the markers | Insights → `bet_placed`, breakdown by `markers` | `markers` is how many of the guessing team's markers were visible when the bet was placed. A pile-up at `0` means people bet before looking, so showing the markers is decoration rather than information — the fix would be UI, not the endpoint. |
 | Attention per stretch | Insights → `session_end`, median of `seconds` | Per hide, not per session. See above. |
 
 ### Game quality: are the scales and the scoring right
@@ -158,6 +175,8 @@ long a room full of people spends not playing.
 | Bullseye rate | `round_revealed` where `points = 5`, over all `round_revealed` | |
 | Wrong-side rate | `round_revealed` where `points = -2` | A rising number here usually means confusing scale pairs, not bad players. |
 | Average miss | Insights → `round_revealed`, average of `distance`, **filtered to `distance >= 0`** | `-1` is the "unknown" sentinel and will drag the mean down if it is not excluded. |
+| Are the clue rules too strict | Insights → `clue_sent`, total events, breakdown by `blocked` | An absent `blocked` means the clue went out on the first attempt, which is what most of them should be. One reason dominating is a rule players do not understand rather than a rule that is working — `gluedWord` in particular, since it is the only rule decided by a heuristic. |
+| Clue length | Insights → `clue_sent`, average of `words` | Counts words that carry meaning; articles and prepositions are excluded, so this is not the length of the string. |
 | Do longer clues score better | Not answerable in Mixpanel | `words` is on `clue_sent` and `points` is on `round_revealed`; correlating them needs them on one event. See Part 3. |
 | Which scales are hardest | Not answerable in Mixpanel | No event carries `scale_key`. Use the leaderboard's Scales board or `v_scale_stats` in Supabase, which have this exactly. See Part 3. |
 
