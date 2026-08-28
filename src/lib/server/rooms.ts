@@ -39,6 +39,7 @@ import {
   underStaffedTeams,
   type Calibration,
   type StoredReveal,
+  type TeamMisses,
 } from "../game/engine";
 import { clueErrorKey, validateClue } from "../game/clue";
 import { t } from "../i18n";
@@ -1393,7 +1394,6 @@ export async function endGame(code: string, playerId: string, token: string) {
 
 /** Writes the durable game_results rows and closes the room. */
 async function finishGame(room: Room, teams: Team[]): Promise<void> {
-  const top = leader(teams);
   const players = await getPlayers(room.id);
 
   const { data: rounds } = await admin()
@@ -1402,26 +1402,38 @@ async function finishGame(room: Room, teams: Team[]): Promise<void> {
     .eq("room_id", room.id)
     .not("revealed_at", "is", null);
 
-  const rows = teams.map((team) => {
-    const mine = (rounds ?? []).filter((r: { team_id: string }) => r.team_id === team.id);
+  // The per-team averages are computed before the winner is named rather than
+  // inside the row builder below, because naming the winner now depends on
+  // them: equal scores are settled on average miss, and equal scores are common
+  // enough to matter, since one reveal can put a guessing team and a betting
+  // team over the goal together.
+  const revealed = rounds ?? [];
+  const played: Record<string, number> = {};
+  const misses: TeamMisses = {};
+  for (const team of teams) {
+    const mine = revealed.filter((r: { team_id: string }) => r.team_id === team.id);
     const distances = mine
       .map((r: { distance: number | null }) => r.distance)
       .filter((d: number | null): d is number => d !== null);
-    const avg =
+    played[team.id] = mine.length;
+    misses[team.id] =
       distances.length > 0
         ? Math.round((distances.reduce((a, b) => a + b, 0) / distances.length) * 10) / 10
         : null;
-    return {
-      room_code: room.code,
-      team_name: team.name,
-      score: team.score,
-      rounds_played: mine.length,
-      avg_distance: avg,
-      is_winner: top ? team.id === top.id : false,
-      player_names: players.filter((p) => p.team_id === team.id).map((p) => p.name),
-      goal: room.goal,
-    };
-  });
+  }
+
+  const top = leader(teams, misses);
+
+  const rows = teams.map((team) => ({
+    room_code: room.code,
+    team_name: team.name,
+    score: team.score,
+    rounds_played: played[team.id],
+    avg_distance: misses[team.id],
+    is_winner: top ? team.id === top.id : false,
+    player_names: players.filter((p) => p.team_id === team.id).map((p) => p.name),
+    goal: room.goal,
+  }));
 
   const playedRows = rows.filter((r) => r.rounds_played > 0);
   if (playedRows.length > 0) {

@@ -30,6 +30,7 @@ import {
   formatClock,
   generateRoomCode,
   hostIsAway,
+  leader,
   makeTeams,
   mayControlRound,
   mayExpire,
@@ -41,6 +42,8 @@ import {
   pickScale,
   playableTeams,
   randomTarget,
+  rankTeams,
+  rankTeamsWithWinner,
   scoreFor,
   secondsLeft,
   seenRecently,
@@ -50,6 +53,7 @@ import {
   timerLevel,
   underStaffedTeams,
   type StoredReveal,
+  type TeamMisses,
 } from "../src/lib/game/engine";
 import {
   MAX_CLUE_WORDS,
@@ -234,6 +238,94 @@ test("goal detection only fires when a goal is set", () => {
   ];
   assert.deepEqual(teamsAtGoal(teams, 20).map((t) => t.id), ["t1"]);
   assert.deepEqual(teamsAtGoal(teams, 0), [], "endless mode never auto-finishes");
+});
+
+test("a tie on points is settled by who was closer, not by who joined first", () => {
+  // The bug this replaces: `leader` sorted on score alone, and `Array.sort` is
+  // stable, so two teams on 12 handed the game to whichever was created first in
+  // the lobby. Here t2 is closer and must win from second place in the array.
+  const teams: Team[] = [
+    { id: "t1", name: "One", color: "#1", score: 12 },
+    { id: "t2", name: "Two", color: "#2", score: 12 },
+    { id: "t3", name: "Three", color: "#3", score: 5 },
+  ];
+  const misses: TeamMisses = { t1: 18.4, t2: 9.1, t3: 6.0 };
+
+  assert.equal(leader(teams, misses)?.id, "t2", "closer on average, so the game is theirs");
+  assert.deepEqual(
+    rankTeams(teams, misses).map((t) => t.id),
+    ["t2", "t1", "t3"],
+    "and t3 stays last: a better average does not buy points"
+  );
+
+  // Only exactly one champion is ever recorded, which is what `is_winner` needs.
+  const top = leader(teams, misses);
+  assert.deepEqual(
+    teams.filter((t) => t.id === top?.id).length,
+    1,
+    "the stored result marks one winner, never two"
+  );
+});
+
+test("a team with nothing to show cannot win a tie on it", () => {
+  // A team can end a game on points it took entirely from side bets, having
+  // never revealed a round of its own. It has no average, and an absent average
+  // must not read as a perfect one — otherwise the team that never played would
+  // outrank the team that did.
+  const teams: Team[] = [
+    { id: "t1", name: "Played", color: "#1", score: 12 },
+    { id: "t2", name: "Betted", color: "#2", score: 12 },
+  ];
+  assert.equal(leader(teams, { t1: 22.5, t2: null })?.id, "t1");
+  assert.equal(
+    leader(teams, { t1: 22.5 })?.id,
+    "t1",
+    "missing from the map means the same as null"
+  );
+
+  // Two teams that are inseparable keep the order they were given, so the
+  // podium, the scoreboard and the stored row cannot disagree with each other.
+  assert.deepEqual(
+    rankTeams(teams, { t1: null, t2: null }).map((t) => t.id),
+    ["t1", "t2"],
+    "no average anywhere: stable, not NaN-shuffled"
+  );
+  assert.deepEqual(
+    rankTeams(teams).map((t) => t.id),
+    ["t1", "t2"],
+    "and no map at all is the old score-only answer"
+  );
+});
+
+test("the winner screen orders the tie the way the server decided it", () => {
+  // The room payload has no round history, so the podium cannot recompute the
+  // average-miss tie-break. It reads back the name the server stored instead —
+  // otherwise the crown on the steps contradicts the headline above them.
+  const teams: Team[] = [
+    { id: "t1", name: "One", color: "#1", score: 12 },
+    { id: "t2", name: "Two", color: "#2", score: 12 },
+    { id: "t3", name: "Three", color: "#3", score: 5 },
+  ];
+  assert.deepEqual(
+    rankTeamsWithWinner(teams, "Two").map((t) => t.id),
+    ["t2", "t1", "t3"],
+    "the named champion leads its score group"
+  );
+  assert.deepEqual(
+    rankTeamsWithWinner(teams, "Three").map((t) => t.id),
+    ["t1", "t2", "t3"],
+    "but a name cannot lift a team over a team with more points"
+  );
+  assert.deepEqual(
+    rankTeamsWithWinner(teams, null).map((t) => t.id),
+    ["t1", "t2", "t3"],
+    "an unfinished room has no champion and just sorts on score"
+  );
+  assert.deepEqual(
+    rankTeamsWithWinner(teams, "Nobody").map((t) => t.id),
+    ["t1", "t2", "t3"],
+    "a name matching no team leaves the order alone"
+  );
 });
 
 test("input sanitising", () => {

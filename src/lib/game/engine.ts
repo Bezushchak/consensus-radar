@@ -222,9 +222,80 @@ export function teamsAtGoal(teams: Team[], goal: number): Team[] {
   return teams.filter((t) => t.score >= goal);
 }
 
-export function leader(teams: Team[]): Team | null {
+/**
+ * Average miss per team, keyed by team id. `null` means the team never
+ * revealed a round, which is a different thing from having revealed one and
+ * missed by nothing.
+ */
+export type TeamMisses = Record<string, number | null>;
+
+/**
+ * The final standings: most points first, and on equal points whoever was
+ * closer on average.
+ *
+ * Points alone cannot name a winner, because a single reveal moves more than
+ * one team — the guessing team takes its band, and every watching team that
+ * agreed on the right side takes a point along with it. Two teams crossing the
+ * goal in the same breath is therefore ordinary rather than freak, and sorting
+ * on score alone handed those games to whichever of the tied teams happened to
+ * be created first in the lobby. That was never a rule; it was the stability
+ * of `Array.sort` leaking into the game.
+ *
+ * Average miss is the honest separator, and it is already the tie-break the
+ * leaderboard's team board applies, so the winner screen and the stored table
+ * now agree instead of ordering the same two rows differently. A team with no
+ * revealed round has no average and so cannot win a tie on one: it sorts
+ * behind every team that does have one, having demonstrated nothing to be
+ * closer at. Teams that are genuinely inseparable keep their lobby order,
+ * which is arbitrary but at least stable, so the podium and the row written to
+ * `game_results` never disagree about who came first.
+ */
+export function rankTeams(teams: Team[], misses: TeamMisses = {}): Team[] {
+  // `??` catches both the explicit null and the team that is missing from the
+  // map entirely. Subtracting the two sentinels would give NaN, which `sort`
+  // silently reads as zero, so the comparison below is written out instead.
+  const miss = (t: Team): number => misses[t.id] ?? Number.POSITIVE_INFINITY;
+  return [...teams].sort((a, b) => {
+    if (a.score !== b.score) return b.score - a.score;
+    const ma = miss(a);
+    const mb = miss(b);
+    if (ma === mb) return 0;
+    return ma < mb ? -1 : 1;
+  });
+}
+
+/**
+ * The winner. `misses` is optional so that a caller with no round data still
+ * gets the old score-only answer rather than a type error, but every caller
+ * that can name a champion should pass it.
+ */
+export function leader(teams: Team[], misses: TeamMisses = {}): Team | null {
   if (teams.length === 0) return null;
-  return [...teams].sort((a, b) => b.score - a.score)[0];
+  return rankTeams(teams, misses)[0];
+}
+
+/**
+ * The standings as a phone can order them: score first, and then the winner the
+ * server already named lifted to the front of its own score group.
+ *
+ * A room payload carries no round history, so a client cannot recompute the
+ * average-miss tie-break for itself — and does not have to. `finishGame`
+ * settled it and wrote the answer into `winner_team_name`, so the winner screen
+ * reads that answer back rather than guessing at it. Without this, the podium
+ * sorted on score alone and could hand the crown to one team while the headline
+ * above it congratulated the other.
+ *
+ * Matched by name because the name is the only thing the room stores about it.
+ * Two teams sharing a name would be ambiguous here, but they are already
+ * ambiguous in the headline, on the scoreboard and on the leaderboard, so this
+ * loses nothing that was not lost the moment they were named in the lobby.
+ */
+export function rankTeamsWithWinner(teams: Team[], winnerName: string | null): Team[] {
+  return [...teams].sort((a, b) => {
+    if (a.score !== b.score) return b.score - a.score;
+    if (winnerName === null) return 0;
+    return (a.name === winnerName ? 0 : 1) - (b.name === winnerName ? 0 : 1);
+  });
 }
 
 // ---------------------------------------------------------------------

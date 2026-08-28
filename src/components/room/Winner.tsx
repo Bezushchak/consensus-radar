@@ -8,7 +8,7 @@ import type { LbEntry } from "@/components/leaderboard/types";
 import Scoreboard from "@/components/Scoreboard";
 import * as api from "@/lib/client/api";
 import { track } from "@/lib/client/track";
-import type { Calibration } from "@/lib/game/engine";
+import { rankTeamsWithWinner, type Calibration } from "@/lib/game/engine";
 import type { RunAction } from "./RoomClient";
 import type { Player, RoomState } from "@/lib/types";
 
@@ -25,7 +25,17 @@ export default function Winner({
 }) {
   const { t } = useLang();
   const { room, players } = state;
-  const ranked = useMemo(() => [...room.teams].sort((a, b) => b.score - a.score), [room.teams]);
+  /**
+   * Ordered by score, with the tie settled the way the server settled it: on
+   * equal points the champion it named in `winner_team_name` comes first. Sorting
+   * on score alone here used to let the crown on the podium disagree with the
+   * headline directly above it, since two teams reaching the goal in the same
+   * reveal is ordinary rather than rare.
+   */
+  const ranked = useMemo(
+    () => rankTeamsWithWinner(room.teams, room.winner_team_name),
+    [room.teams, room.winner_team_name]
+  );
   const top = ranked[0];
 
   /**
@@ -85,7 +95,10 @@ export default function Winner({
 
       <Podium entries={podium} youLabel={t("lbYou")} />
 
-      <Scoreboard teams={room.teams} players={players} sorted myTeamId={me.team_id} />
+      {/* `ranked`, not `room.teams` with `sorted` — the board's own sort knows
+          only about score, and would put two tied teams in lobby order while the
+          podium above it put them in the server's order. */}
+      <Scoreboard teams={ranked} players={players} myTeamId={me.team_id} />
 
       <div className="ok" style={{ textAlign: "center" }}>
         {t("resultsSaved")}
