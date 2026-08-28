@@ -35,7 +35,12 @@ export const NUMBER_WORDS: ReadonlySet<string> = new Set([
   "half", "halves", "halfway", "midway", "quarter", "quarters", "thirds",
   "fourths", "fifths", "sixths", "sevenths", "eighths", "ninths", "tenths",
   "dozen", "dozens", "percent", "percentage", "percentile", "once", "twice",
-  "thrice",
+  "thrice", "hundredths", "thousandths", "millionth", "billionth", "trillionth",
+  // Decade plurals and the vaguer counts — "in his fifties", "tens of people".
+  // The -ish, -odd and -something forms are not listed per number; stripping
+  // them is `VAGUE_SUFFIXES`' job, which keeps this set from tripling.
+  "tens", "twenties", "thirties", "forties", "fifties", "sixties",
+  "seventies", "eighties", "nineties",
 
   // Ukrainian forms that no stem below reaches, or where a stem would be unsafe
   "нуль", "нуля", "нулю", "нулем", "нулів",
@@ -47,7 +52,24 @@ export const NUMBER_WORDS: ReadonlySet<string> = new Set([
   "семи", "семеро", "сімох", "сімка", "сімку",
   "сорок",
   "сто", "двісті", "триста", "чотириста",
+  "сотня", "сотні", "сотень", "сотнею",
+  // "пів" only ever as a whole word. As a stem it would swallow південь
+  // (south), північ (north) and півень (rooster), which are ordinary words and
+  // exactly the sort of thing a scale about direction invites.
+  "пів", "півтора", "півтори", "півсотня", "півсотні", "півсотню",
   "раз", "рази", "разів", "разу", "двічі", "тричі",
+  // Nominatives the stems below already reach on their own. They are spelled
+  // out anyway because `isGluedNumber` in `clue.ts` tiles a token out of *exact*
+  // words: a stem catches "п'ятдесятп'ять" (it starts with п'ят) but cannot
+  // catch "сорокп'ять", where the stem-shaped half is the tail. Listing the
+  // nominatives lets the tail be matched too. Safe because tiling only rejects
+  // when the whole token is numbers — "стонога" and "сорока" stay untouched.
+  "п'ять", "шість", "сім", "вісім", "дев'ять", "десять",
+  "одинадцять", "дванадцять", "тринадцять", "чотирнадцять", "п'ятнадцять",
+  "шістнадцять", "сімнадцять", "вісімнадцять", "дев'ятнадцять",
+  "двадцять", "тридцять", "п'ятдесят", "шістдесят", "сімдесят",
+  "вісімдесят", "дев'яносто",
+  "п'ятсот", "шістсот", "сімсот", "вісімсот", "дев'ятсот", "тисяча",
   // "second": only the inflections that cannot be read as "friend"
   "другий", "другому", "другим", "друге", "другій", "другою", "другі", "других",
 ]);
@@ -75,6 +97,19 @@ export const NUMBER_STEMS: readonly string[] = [
   // fractions and rates
   "половин", "чверт", "відсот", "процент", "дюжин",
 ];
+
+/**
+ * Suffixes that make a number vague without making it stop being a number:
+ * "fiftyish", "fiftyodd", "twentysomething". Stripped and retested rather than
+ * listed against every number, which would triple `NUMBER_WORDS`.
+ *
+ * Safe because the *remainder* still has to be a number word on its own. That
+ * is what leaves "finish" (fin), "punish" (pun), "British" (Brit) and "period"
+ * (peri) alone — none of their stems is a number, so none of them is rejected.
+ * Hyphenated spellings never reach here at all: the tokeniser has already split
+ * "fifty-ish" into two words, and the first one is caught the ordinary way.
+ */
+export const VAGUE_SUFFIXES: readonly string[] = ["ish", "odd", "something"];
 
 /**
  * Real words a stem above would otherwise swallow. Checked first, so they win.

@@ -899,6 +899,55 @@ test("a number is a number however it is written", () => {
   clueOk("very warm indeed");
 });
 
+test("welding numerals together or blurring them does not hide them", () => {
+  // The hole this closes. The glue check only looks at tokens of twelve
+  // characters or more, and the Ukrainian stems do nothing for English, so every
+  // one of these used to pass: nine characters, one token, no digits.
+  for (const glued of [
+    "fiftyfive",
+    "thirtytwo",
+    "sixtyfour",
+    "onehundred",
+    "twentyfirst",
+    "fiftypercent",
+  ]) {
+    assert.deepEqual(
+      clueFail(glued),
+      { reason: "numberWord", word: glued },
+      `${glued} is a number written without the space`
+    );
+  }
+
+  // Ukrainian had half the hole: a stem catches "п'ятдесятп'ять", which starts
+  // with п'ят, but the same stem is useless when the stem-shaped half is the
+  // tail. Hence the nominatives in NUMBER_WORDS.
+  assert.equal(clueFail("сорокп'ять").reason, "numberWord");
+  assert.equal(clueFail("стодвадцять").reason, "numberWord");
+
+  // A number made vague is still a number, in words and in decades.
+  assert.equal(clueFail("fiftyish").reason, "numberWord");
+  assert.equal(clueFail("fiftyodd").reason, "numberWord");
+  assert.equal(clueFail("twentysomething").reason, "numberWord");
+  assert.equal(clueFail("in his fifties").reason, "numberWord");
+  assert.equal(clueFail("сотня людей").word, "сотня");
+  assert.equal(clueFail("півсотні кроків").word, "півсотні");
+
+  // And the whole reason the rule is "the entire token decomposes" rather than
+  // "the token starts with a number": every one of these is a real word that
+  // begins with one, and rejecting them would be far worse than missing an
+  // evasion. The -ish and -odd words are here for the same reason — the tail is
+  // stripped, but what is left still has to be a number, and fin, pun and Brit
+  // are not.
+  for (const real of [
+    "tenacious", "tenor", "tension", "tensile", "onerous", "someone", "twofold",
+    "halfhearted", "finish", "punish", "British",
+    "разом", "стонога", "тризуб", "сорока", "стосунок", "одночасно",
+    "південь", "північ", "півень", "сьомга",
+  ]) {
+    clueOk(real);
+  }
+});
+
 test("the word cap counts meaning, not grammar", () => {
   // Six words that carry meaning, with articles and prepositions on top.
   assert.equal(countClueWords("the cold and the wet of a grey damp miserable evening"), 6);
@@ -983,6 +1032,38 @@ test("every clue rejection can actually be shown to the player", () => {
       const out = translate(lang, key, { count: 3, max: MAX_CLUE_WORDS });
       assert.ok(!/\{\w+\}/.test(out), `${key} in ${lang} left a placeholder unfilled: ${out}`);
     }
+  }
+});
+
+/**
+ * The three strings that had no caller for a while.
+ *
+ * `leaveBtn` and `calibEmpty` both sat in the dictionary translated and unused —
+ * the leave action was reachable only by hand at the API, and the calibration
+ * card treated "the read failed" and "no round was revealed" as one state, so
+ * the message for the second could never be chosen. Both now have exactly one
+ * caller, and this is what notices if a later edit takes it away again: a key
+ * that renders as its own name is a key nothing renders.
+ */
+test("leaving and the empty calibration card can both be spoken", () => {
+  for (const key of ["leaveBtn", "leaveConfirm", "calibEmpty"]) {
+    assert.ok(STRINGS[key], `${key} is used by the room screens but not in the dictionary`);
+    for (const lang of ["ua", "en"] as const) {
+      const out = translate(lang, key, {});
+      assert.ok(out.length > 0, `${key} is empty in ${lang}`);
+      assert.ok(out !== key, `${key} in ${lang} rendered as its own key`);
+      assert.ok(!/\{\w+\}/.test(out), `${key} in ${lang} left a placeholder unfilled: ${out}`);
+    }
+  }
+
+  // The confirm is the only one of the three that has to read as a question:
+  // it is put to somebody mid-round, and a statement with an OK button under it
+  // is how people leave a game they meant to stay in.
+  for (const lang of ["ua", "en"] as const) {
+    assert.ok(
+      translate(lang, "leaveConfirm", {}).includes("?"),
+      `leaveConfirm in ${lang} is not phrased as a question`
+    );
   }
 });
 

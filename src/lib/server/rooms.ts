@@ -42,7 +42,9 @@ import {
   type TeamMisses,
 } from "../game/engine";
 import { clueErrorKey, validateClue } from "../game/clue";
+import { bandOf } from "../game/hint";
 import { t } from "../i18n";
+import { hintFor } from "./hints";
 import { scalePool } from "./scales";
 import type {
   BetRow,
@@ -644,7 +646,20 @@ async function openRound(room: Room): Promise<Round> {
 // Round play
 // ---------------------------------------------------------------------
 
-/** Only the clue-giver of the current round may read the target. */
+/**
+ * Only the clue-giver of the current round may read the target.
+ *
+ * The pre-written hint rides along in the same response, and this is the only
+ * place it is ever served. That is not convenience — a hint is written for one
+ * fifth of the dial, so anyone who can read it knows the answer to within
+ * twenty points. This function is already the one per-viewer payload in the
+ * game and already 403s everybody but the clue-giver, so it is the only door
+ * the hint can use. It must never appear in `RoomState`, which is built once
+ * and handed to the whole room.
+ *
+ * A hint that cannot be found is `null`, never an error: `hintFor` swallows a
+ * missing table and an un-run seed alike, and the round must open regardless.
+ */
 export async function getSecretTarget(code: string, playerId: string, token: string) {
   const { room, player } = await authenticate(code, playerId, token);
   const round = await getRound(room.current_round_id);
@@ -661,7 +676,10 @@ export async function getSecretTarget(code: string, playerId: string, token: str
   if (error) throw new ApiError(500, error.message);
   if (!data) throw new ApiError(500, "Round secret is missing");
 
-  return { roundId: round.id, target: data.target as number };
+  const target = data.target as number;
+  const hint = await hintFor(round.scale_key, bandOf(target), round.id);
+
+  return { roundId: round.id, target, hint };
 }
 
 /**

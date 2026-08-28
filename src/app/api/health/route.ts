@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { hintRowCount } from "@/lib/server/hints";
 import { mixpanelEnabled } from "@/lib/server/mixpanel";
 import { scaleSource } from "@/lib/server/scales";
 import { schemaReport } from "@/lib/server/schema-check";
@@ -21,7 +22,13 @@ export async function GET() {
 
     // `scales: "builtin"` means the seed has not been run (or the table is
     // empty): the game still works, it just deals from the shorter code list.
-    const [{ source, count }, schema] = await Promise.all([scaleSource(), schemaReport()]);
+    // `hintRows: 0` is the same kind of answer for the clue hints, and the same
+    // kind of non-problem — it never moves `ok`.
+    const [{ source, count }, schema, hintRows] = await Promise.all([
+      scaleSource(),
+      schemaReport(),
+      hintRowCount(),
+    ]);
 
     // A database missing columns this build writes to is not "healthy" even
     // though every connection works, so it answers 503 and names the gap.
@@ -31,6 +38,7 @@ export async function GET() {
         supabase: "reachable",
         scales: source,
         scaleCount: count,
+        hintRows,
         schema,
         // "off" is a valid state, not a fault: the app's own analytics work
         // without it. It is here so a token that never got deployed is visible.

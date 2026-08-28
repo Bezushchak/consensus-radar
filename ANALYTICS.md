@@ -45,12 +45,12 @@ Nine funnel events, in the order a player meets them:
 | `room_created` | The room exists | host | `teams`, `goal`, `bets`, `cats` (`general+analytics`) |
 | `joined` | A player takes a seat | that player | `from` (`home` / `gate`), `resumed`, `picked_team` |
 | `game_started` | The host presses Start | host | `players`, `teams` (teams with enough people to play), `clue_sec`, `guess_sec` (the two phase limits as saved, `0` for unlimited) |
-| `clue_sent` | A clue-giver submits | the clue-giver only | `round`, `words` (words that count, free ones excluded), `blocked` — present only if a clue rule stopped them on the way |
+| `clue_sent` | A clue-giver submits | the clue-giver only | `round`, `words` (words that count, free ones excluded), `blocked` — present only if a clue rule stopped them on the way, `hint` — present only in a round that had a pre-written idea to offer, and then `true` if the clue-giver opened it |
 | `guess_locked` | A player locks a marker | that guesser only | `round`, `changed` — was an earlier marker replaced |
 | `round_revealed` | The reveal appears | **every device watching** | `round`, `points`, `distance` (`-1` when unknown) |
 | `game_finished` | The winner screen appears | every device | `rounds`, `score` |
 
-And thirteen that are useful but never gate a later step:
+And fourteen that are useful but never gate a later step:
 
 | Event | Props | Note |
 | --- | --- | --- |
@@ -58,6 +58,7 @@ And thirteen that are useful but never gate a later step:
 | `leaderboard_open` | — | Once per session per page. |
 | `lb_row_open` | `board`, `rank` | Opened one leaderboard entry — a podium step or a table row, both of which open the same card. Fires every time, not once per session, because the interesting figure is how many entries one visit opens. `board` is `teams` / `rounds` / `players` / `scales`; `rank` is the displayed rank, so `1`–`3` is somebody reading the podium and `4`+ is somebody who went looking. |
 | `howto_open` | — | Opened `/how-to-play`. Once per session. Not a funnel step on purpose: reading the rules is not on the way to playing, so a step nobody has to take would read as a 90% drop-off. |
+| `hint_opened` | `round`, `scale`, `band` | The clue-giver asked for the pre-written starting idea. Once per round, on the clue-giver's device only — this is the one number that says whether the hint catalogue was worth generating. `band` is which fifth of the dial the target was in (`0`–`4`, or `-1` if the target had not arrived yet), so the seat people get stuck in is visible. Deliberately carries no clue text and no target: the event stream is not a place to leak the answer. |
 | `lang_switched` | `to` | |
 | `bet_placed` | `side`, `round`, `markers` | Only when side bets are enabled for the room. `markers` is how many of the guessing team's markers were on screen when the call was made. |
 | `round_skipped` | `round`, `phase` | Somebody gave up on a round rather than scoring it. Once per skipped round: both rescues are claimed atomically, and the loser of a simultaneous press is handed the same fresh state back rather than an error, so the device checks the state came back *changed* before counting — a plain "the call worked" would report one rescue twice. `phase` says whether the clue had arrived yet — `clue` is a clue-giver who never delivered, `guess` is a table that could not read one. |
@@ -79,7 +80,8 @@ Clicks are captured by one delegated listener, so every labelled control is
 already measured without anyone remembering to instrument it. The labels that
 exist, by screen: `resume-room`, `create-room`, `join-by-code` on the front page;
 `pick-team`, `join-room` on the join gate; `copy-link`, `switch-team`,
-`save-settings`, `start-game` in the lobby; `claim-host` on any screen once the
+`save-settings`, `start-game` in the lobby; `leave-room` on every screen inside a
+room, and `claim-host` on any of them once the
 host has gone quiet; `send-clue`, `submit-guess`, `change-guess`, `bet-left`,
 `bet-right`, `reveal-now`, `skip-round`, `next-round` in play;
 `play-again`, `winner-leaderboard` on the winner screen; `lb-board-<teams |
@@ -193,7 +195,10 @@ long a room full of people spends not playing.
 | Are the clue rules too strict | Insights → `clue_sent`, total events, breakdown by `blocked` | An absent `blocked` means the clue went out on the first attempt, which is what most of them should be. One reason dominating is a rule players do not understand rather than a rule that is working — `gluedWord` in particular, since it is the only rule decided by a heuristic. |
 | Clue length | Insights → `clue_sent`, average of `words` | Counts words that carry meaning; articles and prepositions are excluded, so this is not the length of the string. |
 | Do longer clues score better | Not answerable in Mixpanel | `words` is on `clue_sent` and `points` is on `round_revealed`; correlating them needs them on one event. See Part 3. |
-| Which scales are hardest | Not answerable in Mixpanel | No event carries `scale_key`. Use the leaderboard's Scales board or `v_scale_stats` in Supabase, which have this exactly. See Part 3. |
+| Is the starting idea worth its catalogue | Insights → `hint_opened`, total events, over `clue_sent` | The share of clues written with the hint open. Low and steady means the line is ignored and the catalogue is dead weight; high means the clue-giver's seat is harder than it looks. Only rounds whose pair actually has hints can produce this event, so read it against `clue_sent` where `hint` is present rather than against all of them. |
+| Which fifth of the dial people get stuck in | Insights → `hint_opened`, breakdown by `band` | `0`–`4` from the low pole up. The middle band is the one to watch: a clue for a target near 50 has to say "neither" without saying either pole, which is the genuinely hard case and where a hint earns its keep. `-1` means the target had not arrived on the device yet, which should be rare. |
+| Does the hint make the clue worse | Insights → `round_revealed`, average of `distance`, no breakdown available | Not answerable as one number: `hint` is on `clue_sent` and `distance` is on `round_revealed`. The honest version is a cohort comparison over a period — average `distance` in a week when hints were seeded against one when they were not. See Part 3. |
+| Which scales are hardest | Not answerable in Mixpanel | Only `hint_opened` carries a scale key, and it fires when somebody asks for help rather than when a round is scored, so it says which pairs are intimidating and not which ones are missed. For difficulty use the leaderboard's Scales board or `v_scale_stats` in Supabase, which have this exactly. See Part 3. |
 
 ### Configuration: what people actually choose
 

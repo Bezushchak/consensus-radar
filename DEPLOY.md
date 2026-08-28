@@ -30,7 +30,7 @@ npm install
 npm run verify
 ```
 
-`verify` runs the type checker, the 71 unit tests, and a production build. All three must pass. This is the same gate Vercel will run, so if it passes here it will pass there.
+`verify` runs the type checker, the 85 unit tests, and a production build. All three must pass. This is the same gate Vercel will run, so if it passes here it will pass there.
 
 ---
 
@@ -53,21 +53,23 @@ Click **Create new project** and wait about two minutes for it to provision.
 
 **1.4** Open `supabase/schema.sql` from this project, copy the entire file, paste it into the editor, and click **Run** (or ⌘↵). It takes a second or two.
 
-That one script creates everything: the room, player, round, guess and bet tables; the isolated secret tables; the durable stats tables that outlive rooms; the scale catalogue table; the analytics events table; the leaderboard and analytics views; the row-level-security policies; the Realtime publication; and two housekeeping functions. It's written to be idempotent, so if you ever change it and re-run the whole thing, nothing breaks.
+That one script creates everything: the room, player, round, guess and bet tables; the isolated secret tables; the durable stats tables that outlive rooms; the scale catalogue table; the clue-hint catalogue; the analytics events table; the leaderboard and analytics views; the row-level-security policies; the Realtime publication; and two housekeeping functions. It's written to be idempotent, so if you ever change it and re-run the whole thing, nothing breaks.
 
 **Do not move on until you have read the table it prints.** The file ends with a summary row, precisely so that "it seemed to work" is not a judgement call:
 
-| tables | views | scales_rows | tables_ok | views_ok | realtime | next_step |
-|---|---|---|---|---|---|---|
-| 12 | 7 | 0 | true | true | true | now run supabase/scales-seed.sql |
+| tables | views | scales_rows | hint_rows | tables_ok | views_ok | realtime | next_step |
+|---|---|---|---|---|---|---|---|
+| 13 | 7 | 0 | 0 | true | true | true | now run supabase/scales-seed.sql |
 
-`tables_ok` and `views_ok` must both be `true`. `realtime` may come back `false` on some projects, where the role you are running as isn't allowed to modify the `supabase_realtime` publication; that is survivable — the app polls every 2.5 seconds instead, and the game plays fine, just less snappily.
+`tables_ok` and `views_ok` must both be `true`. `hint_rows` is the one count that is allowed to stay at zero forever — it is filled by an optional file in step 1.6, and an empty hint catalogue costs one optional line on the clue screen and nothing else, so it is reported without gating anything. `realtime` may come back `false` on some projects, where the role you are running as isn't allowed to modify the `supabase_realtime` publication; that is survivable — the app polls every 2.5 seconds instead, and the game plays fine, just less snappily.
 
 If instead you get a red error, **nothing at all was applied.** The SQL editor runs a whole script inside one transaction, so one failing statement rolls back every statement above it; there is no half-applied state. Fix what the error names and run the file again. This matters because of how it shows up next: if `schema.sql` failed and you go on to the seed anyway, the seed fails with `ERROR: 42P01: relation "public.scales" does not exist`. That error names the seed, but the cause is the script before it — the seed is trying to fill a table that was never created.
 
 **If you already ran an earlier version of this file, run it again now.** Postgres skips `create table if not exists` for a table that already exists, which would leave the newer columns missing, so the script has an explicit migration block that adds them one by one — `scales`, `analytics_events`, `players.player_uid`, `player_round_stats.player_uid`, the Ukrainian label columns on `rounds`, and the three phase-clock columns (`rooms.clue_seconds`, `rooms.guess_seconds`, `rounds.phase_deadline`). Re-running is the only way to get them, and it touches none of your existing data.
 
-The clock columns are the newest of those, and worth a sentence because the symptom of skipping them is so quiet: the game plays exactly as it always did, but the lobby's two timer pickers refuse to save. Every limit reads as unlimited, no countdown is ever drawn, and nothing else about the room changes — the feature is absent rather than broken. If saving settings shows you an error mentioning `clue_seconds`, that is this, and the fix is to run `schema.sql` again.
+Whole new tables need no migration block — `create table if not exists` makes them on any run — so re-running is also how an older project picks up `scale_hints`, the table behind step 1.6. It arrives empty, which is a valid resting state.
+
+The clock columns are the newest of the columns, and worth a sentence because the symptom of skipping them is so quiet: the game plays exactly as it always did, but the lobby's two timer pickers refuse to save. Every limit reads as unlimited, no countdown is ever drawn, and nothing else about the room changes — the feature is absent rather than broken. If saving settings shows you an error mentioning `clue_seconds`, that is this, and the fix is to run `schema.sql` again.
 
 **1.5** Now load the scale catalogue. Click **New query** again, open `supabase/scales-seed.sql`, copy the whole file, paste, and **Run**. It inserts 262 bilingual pairs and finishes with a count you can eyeball: you want 262 rows, 180 general and 82 analytics.
 
@@ -75,9 +77,33 @@ This file upserts on the pair's key, so re-running it is safe. The one thing to 
 
 Once seeded, the catalogue is yours to edit without touching the code. **Table Editor → scales** lets you add a pair (give it a lower-case key with underscores and fill all four label columns) or retire one by setting `enabled` to false. Changes go live within five minutes — that's the server-side cache — and retiring a pair leaves the stats it already produced intact, because each round stores the wording it was dealt.
 
-**1.6** Verify it landed. Open **Table Editor** in the sidebar. You should see these tables: `analytics_events`, `bets`, `game_results`, `guess_values`, `guesses`, `player_round_stats`, `player_tokens`, `players`, `round_secrets`, `rooms`, `rounds`, `scales`. If `round_secrets`, `guess_values`, `player_tokens` and `analytics_events` show a "no policies" or "RLS enabled, no policies" warning, that is correct and deliberate — that is exactly what keeps the secret target, other people's sliders, and the event log unreadable from the browser. Don't "fix" it.
+**1.6 — optional, and skippable forever.** The clue-giver's screen can offer one pre-written starting idea, chosen by which fifth of the dial the hidden target landed in. Not every one of the 262 pairs has one, because writing them costs money at an API and how many exist is therefore your decision rather than a default. Whatever `data/scale-hints.json` holds is what ships, and both that file and the seed compiled from it state their own count in the first few lines. Everything in this step is optional; the game is complete without it, one small line lighter.
 
-**1.7** Collect the three keys. Go to **Project Settings** (gear icon) → **API** and copy:
+If you want whatever is already written, from the project folder:
+
+```bash
+npm run hints:sql
+```
+
+That compiles `data/scale-hints.json` into `supabase/scale-hints-seed.sql` and prints the number of pairs and rows it wrote. Be honest about the odds while the file is partial: scales are dealt at random from 262, so a dozen pairs is roughly one round in twenty and the line will usually be absent. To have it there most rounds, write the rest. Put **either** `ANTHROPIC_API_KEY` or `OPENAI_API_KEY` in `.env.local` and run the generator first:
+
+```bash
+npm run hints:gen -- --limit=10   # ten pairs, to see what it costs
+npm run hints:gen                 # the rest
+npm run hints:sql
+```
+
+Whichever key is there decides which API is called, so there is no flag to set in the ordinary case. With both, `--provider=openai` or a `--model` whose name gives it away picks. On an OpenAI key the generator asks `/v1/models` once and names the best chat model your key can actually see, rather than trusting a model name written into the repo months ago; `--model` overrides it. The choice does not show up in the output — both providers get the same instructions and both answers are checked by the same validator, and `data/scale-hints.json` records which model wrote it only as provenance.
+
+That key stays local. The generator is a script on your machine and the deployed app has no use for it — hints reach production as rows in a table, never as an API call — so neither key belongs in Vercel.
+
+The generator saves after every pair, so interrupting it loses nothing and re-running it picks up where it stopped. Every line it writes goes through the same validator the clue box uses, so a suggestion that mentions a number is rejected and asked for again rather than shipped — and `hints:sql` refuses to write a seed file at all if any line in the JSON fails that check. Read `README.md` → *A starting idea for the clue-giver* before spending anything.
+
+Then load `supabase/scale-hints-seed.sql` in a **New query**, exactly like the scales seed. It upserts on the pair, band and language and never deletes, so re-running it after generating more adds them without disturbing what is already there. It finishes with one row per language, and `per_pair` in both must read `5` — five bands, filled with no gaps. Ten generated pairs therefore show as `pairs: 10, hint_rows: 50` twice, once for `ua` and once for `en`; the whole catalogue shows as `pairs: 262, hint_rows: 1310` twice, which is the 2,620 rows `/api/health` will then report as `hintRows`.
+
+**1.7** Verify it landed. Open **Table Editor** in the sidebar. You should see these tables: `analytics_events`, `bets`, `game_results`, `guess_values`, `guesses`, `player_round_stats`, `player_tokens`, `players`, `round_secrets`, `rooms`, `rounds`, `scale_hints`, `scales`. If `round_secrets`, `guess_values`, `player_tokens`, `analytics_events` and `scale_hints` show a "no policies" or "RLS enabled, no policies" warning, that is correct and deliberate — that is exactly what keeps the secret target, other people's sliders, the event log, and the hints unreadable from the browser. Don't "fix" it. The hint belongs in that group for the same reason as the target: a hint is written for one fifth of the dial, so a guesser who could read it would know the answer to within twenty points.
+
+**1.8** Collect the three keys. Go to **Project Settings** (gear icon) → **API** and copy:
 
 - **Project URL** — looks like `https://abcdefghijk.supabase.co`
 - **anon public** key — a long string starting `eyJ...`
@@ -85,7 +111,7 @@ Once seeded, the catalogue is yours to edit without touching the code. **Table E
 
 The service_role key bypasses every security rule in the database. It belongs only in server-side environment variables. Never paste it into a file that ships to the browser, never prefix it with `NEXT_PUBLIC_`, and never commit it to git.
 
-**1.8** Wire it up locally so you can test before deploying:
+**1.9** Wire it up locally so you can test before deploying:
 
 ```bash
 cd ~/Desktop/"Consensus Radar"/"Consensus Radar"
@@ -102,13 +128,13 @@ SUPABASE_SERVICE_ROLE_KEY=eyJ...
 
 `.env.local` is already in `.gitignore`, so it will never be committed.
 
-**1.9** Test it for real:
+**1.10** Test it for real:
 
 ```bash
 npm run dev
 ```
 
-Open http://localhost:3000/api/health — you want `"ok":true`, `"supabase":"reachable"`, `"scales":"db"`, `"scaleCount":262`, and `"schema":{"ok":true,"missing":[]}`.
+Open http://localhost:3000/api/health — you want `"ok":true`, `"supabase":"reachable"`, `"scales":"db"`, `"scaleCount":262`, and `"schema":{"ok":true,"missing":[]}`. `"hintRows"` will be `0` if you skipped step 1.6, and that is a pass — it is reported so that a seed you meant to load and didn't is visible, not because zero is wrong. If the hint table itself is absent, it shows up as `"degraded":["table scale_hints"]` rather than in `missing`, and `ok` stays `true`: that list is the one place the health check distinguishes "a feature is off" from "this build writes to a column your database doesn't have".
 
 Read the `schema` part carefully, because it is the one that tells you whether step 1.4 really finished. It compares the live database against what this build writes to, and lists what is absent by name — `"table scales"`, `"players.player_uid"`, `"table analytics_events"`, and so on. Anything in that list means `schema.sql` did not complete, the route answers 503 instead of 200, and the fix is always the same: run `supabase/schema.sql` again and watch it succeed.
 
@@ -223,7 +249,7 @@ Check these ten things, which together exercise everything that could go wrong a
 
 1. Both names appear in the lobby on both phones within a second or two.
 2. Each phone is on a different team, and Start Game becomes clickable only once two teams have someone in them.
-3. Only the clue-giver's phone shows the secret percentage. Look at the other phones and confirm the number is genuinely absent.
+3. Only the clue-giver's phone shows the secret percentage. Look at the other phones and confirm the number is genuinely absent. If you loaded the hints in step 1.6, the same applies to the starting idea: on a scale that has one, the clue-giver gets a line offering it and nobody else sees anything at all. The idea travels on the same request as the target and is guarded by the same check, so the honest test is two lines in a guesser's browser console during a round, both in Step 4a below. Being absent from the screen and being absent from the payload are different claims, and only the second one is worth checking.
 4. When a guesser locks their marker, the other phones see their name tick over to done without showing the value they chose.
 5. At reveal, everybody sees the same target, the same averaged marker, and the per-player breakdown.
 6. **Whose buttons these are.** Reveal, Skip and Next belong to the round's clue-giver and to nobody else — including the host, who is usually on the other team. Look at every other phone during a round and confirm those buttons are genuinely not on the screen, not merely greyed out; the phones that owe nothing show a waiting line instead. Then play a second round and confirm the buttons have moved to a different person, because the clue-giver rotates.
@@ -234,11 +260,40 @@ Check these ten things, which together exercise everything that could go wrong a
 
 If two teams finish on the same score — which happens more often than it sounds, since a betting team can cross the goal in the same reveal as the guessing team — the tie goes to whichever was closer on average across its own rounds, not to whichever was created first. Three things must agree about that: the headline names the closer team, the crown sits on the same team's step, and the scoreboard underneath lists it first. Then open `/leaderboard`, find those two rows on the **Teams** board, and confirm the closer team is above the other one there too, with the lower **Avg miss** to prove it. The one case worth forcing deliberately, if you have the patience: a one-person team never gets a turn of its own but can still collect side bets, so it can arrive at the same score with no rounds and no average of its own. On the winner screen it must lose the tie rather than win it on that empty average. It will not appear on the leaderboard either way — only teams that actually played a round are written there — so check this one on the phone, not on the board.
 
+One more worth thirty seconds in the clue box, because it is the rule players poke at hardest. Type `fiftyfive` and then `сорокп'ять`: both must be refused as numbers, not accepted because the space is missing. `fiftyish` and `fifties` must be refused too. Then type `tenacious`, `finish` and `сорока` and confirm all three are accepted — those are the words the rule has to leave alone, and a rule that rejects them is worse than one that lets an evasion through.
+
 There is no player limit in the code. Practically, a room works comfortably up to about twenty people across four teams; beyond that the lobby list gets unwieldy long before anything technical strains.
 
 Then play one game all the way to the target score and open `/leaderboard`. If the finished game shows up there, the whole chain — rooms, rounds, scoring, and the durable stats tables — is working end to end.
 
 Three things to check on that page, because it is the one screen assembled entirely from the durable tables. The top three of whichever board you are on stand on a podium and the table underneath starts at rank 4 — if a name appears in both places, the podium and the table have fallen out of step. Every step and every row opens a card with the columns the table had to drop to fit on a phone; on the **Rounds** board that card draws the actual dial, so the needle should sit where the miss says it should. And switching board or period closes any open card, because the ranks it was describing have just been reshuffled.
+
+### Step 4a — Prove the secret is secret, rather than merely off-screen
+
+Two things are hidden from a guesser: the target, and — if you did step 1.6 — the starting idea written for the fifth of the dial the target is in. Not drawing them is easy. Not *sending* them is the actual guarantee, and it takes two lines in a guesser's browser console, during an open round, to see it.
+
+First, that the room state everybody receives carries neither one. Open the console on a guesser's phone (or a second desktop window standing in for one) and run:
+
+```js
+const code = location.pathname.split("/").pop().toUpperCase();
+const state = await (await fetch(`/api/rooms/${code}?_=${Date.now()}`)).json();
+[JSON.stringify(state).match(/hint/i), state.round.revealed_target];
+```
+
+`[null, null]` is the pass, and both halves are needed. The first says the word "hint" appears nowhere in the payload at all — not as a value, not as a key. The second has to read the value rather than search for the name, because `revealed_target` *is* a field of every round; it simply holds `null` until the reveal, and grepping for the string would fail on the key and tell you nothing. This payload is built once and handed to the whole room, so anything in it with a value is public to everybody playing.
+
+Then that the one endpoint which *does* carry them refuses this player — asked with their real credentials rather than without, because a bare `fetch` gets a `401` for missing headers and would prove nothing about who is allowed:
+
+```js
+const me = JSON.parse(localStorage[`cr:identity:${code}`]);
+(await fetch(`/api/rooms/${code}/secret`, {
+  headers: { "x-player-id": me.playerId, "x-player-token": me.token },
+})).status;
+```
+
+`403` is the pass, and the message with it names the clue-giver as the only one who may look. Run both blocks again on the clue-giver's own phone: the first still answers `[null, null]`, the second answers `200`, and its body holds `target` plus `hint` — the same code, the same round, a different seat. (`hint` is `null` there if you skipped step 1.6 or the round's scale has no hint yet, which is the feature being absent rather than failing.)
+
+If either check comes back the other way round, stop and read *Who sees what* in `README.md` before playing with anyone whose opinion of the game you care about.
 
 ---
 
@@ -255,6 +310,8 @@ The four tiles first: **sessions** (one browser tab counts once), **events**, **
 Then the funnel, which is the same nine steps every player walks: opened the app → started the create form → created a room → joined → started the game → sent a clue → locked a guess → completed a round → finished a game. **Conversion** is the share of step 1 that got this far. **Drop-off** is the share of the *previous* step that never arrived, and the largest number in that column is the thing to fix next. A big drop between "created a room" and "joined" means people can't get their friends in; a big drop between "joined" and "locked a guess" means the game itself is losing them.
 
 Then **Other events**, which is everything the app records that isn't a step in that walk. Most of it is context — who opened the leaderboard, who switched language — but two rows are the ones to actually watch, because they only happen when a room has stopped moving. `round_skipped` next to `round_revealed` is how often a scale or a clue-giver defeats a table. `host_claimed` next to `room_created` is how often the person who opened the room walked away from it. If either ratio climbs, the fix is upstream of the button: a better scale pool, a clearer clue screen, fewer host-only controls.
+
+A third row joins them once you have done step 1.6: `hint_opened` next to `clue_sent` is how often a clue-giver, offered a written idea, took it. That ratio is the only evidence that generating the catalogue was worth the money, and it is the one to look at before generating more of it. It fires at most once per round and only on the clue-giver's own device, so it cannot be inflated by the number of phones watching.
 
 Then the click table, which is literally who clicked what, per control per page, with the number of distinct sessions beside the raw count. A control that shows as `(unlabelled)` is one nobody labelled in the code yet — worth noticing rather than hiding.
 
@@ -437,3 +494,9 @@ The takeover notice appears in a room where the host is sitting right there — 
 Mixpanel shows nothing, in this order. Does `/api/health` say `"mixpanel":"on"`? If it says `off`, the token isn't in that environment — locally check `.env` or `.env.local` (both are read), in production check Vercel and remember that adding a variable needs a redeploy. Then run `npm run mixpanel:test`, which reports the actual rejection reason rather than leaving you guessing. If the probe is accepted but real events don't appear, check the Vercel function logs for lines beginning `[mixpanel]`. And if everything claims success and the project is still empty, you're almost certainly sending to the wrong data region: an `eu.mixpanel.com` project needs `https://api-eu.mixpanel.com`, and the US host accepts the request and drops it.
 
 A scale you added in the dashboard doesn't appear — the server caches the catalogue for five minutes. Wait it out, or redeploy to clear it immediately. If it still doesn't appear, check that `enabled` is true and that all four label columns are filled; rows with a missing label are skipped rather than shown half-empty.
+
+The clue-giver never gets a starting idea — most likely there is simply no hint for that pair, which is the normal state of every scale the generator has not been run for. Check `/api/health` in this order. `"hintRows":0` means no seed was loaded at all, so step 1.6 is the whole answer. `"degraded":["table scale_hints"]` means `schema.sql` predates the table and needs re-running; note that `ok` stays `true` in that case, deliberately — a missing hint table is a feature switched off, not a broken deployment, and it is listed separately from `missing` precisely so it cannot be mistaken for one. If `hintRows` is a healthy number and one specific scale still offers nothing, that pair is not in `data/scale-hints.json`: look it up in the `scale_hints` table by `scale_key`. And a hint you have only just seeded can be up to ten minutes late, because hints are cached per scale for that long — the same trade-off as the catalogue, for the same reason.
+
+The generator says it has no key when you are sure it does — read the line after that, which names the env files it actually read. `.env.local` is not created by anything in this repo, so a key pasted into a file that was never written is the usual answer; the script reads `.env.local`, `.env.development.local`, `.env.development` and `.env`, in that order, and the first file to set a name wins. If it names a provider you did not expect, that is `--model`, `HINT_MODEL` or `HINT_PROVIDER` talking — the two environment variables are the flags' fallbacks, and are worth knowing about mainly because a value left in `.env.local` months ago is invisible on the command line: a name starting `gpt-`, `o3-` or `chatgpt-` asks for OpenAI and one starting `claude-` asks for Anthropic, whichever key happens to be present.
+
+Never put `ANTHROPIC_API_KEY` or `OPENAI_API_KEY` in Vercel. They are local authoring keys: the generator is a script you run on your own machine, and no request the deployed app makes has any use for either. Hints reach production as rows in a table, not as an API call.

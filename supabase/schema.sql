@@ -49,6 +49,42 @@ create table if not exists public.scales (
 create index if not exists scales_pool_idx on public.scales (category) where enabled;
 
 -- ---------------------------------------------------------------------
+-- SCALE HINTS — a starting idea for the clue-giver, per pair, per band.
+--
+-- Seeded by supabase/scale-hints-seed.sql (generated from
+-- data/scale-hints.json). Optional: an empty table means the clue screen
+-- simply has no idea to offer, which is a feature being absent rather than
+-- broken. That is why there is no builtin fallback in the code the way there
+-- is for `scales` — a missing hint costs nothing, a missing scale ends the
+-- game.
+--
+-- `band` is the fifth of the dial the target sits in: 0 = 0-19, 1 = 20-39,
+-- 2 = 40-59, 3 = 60-79, 4 = 80-100. `src/lib/game/hint.ts` owns that
+-- arithmetic; this column just stores the answer.
+--
+-- `variant` lets a pair carry several ideas for the same band later without a
+-- migration — the reader picks one deterministically from the round id. Only
+-- variant 0 is seeded today.
+--
+-- NOT a foreign key to public.scales on purpose. Scales are re-seeded from the
+-- dashboard, and a hint whose pair has gone is never read by anything, whereas
+-- a reference would make re-seeding fail on the hints instead.
+--
+-- RLS below puts this table in the secrets group. It has to be: the hint says
+-- which fifth of the dial the target is in, so a guesser who could read it
+-- would know the answer to within twenty points.
+-- ---------------------------------------------------------------------
+create table if not exists public.scale_hints (
+  scale_key  text     not null,
+  band       smallint not null check (band between 0 and 4),
+  lang       text     not null check (lang in ('ua', 'en')),
+  variant    smallint not null default 0,
+  text       text     not null,
+  created_at timestamptz not null default now(),
+  primary key (scale_key, band, lang, variant)
+);
+
+-- ---------------------------------------------------------------------
 -- ROOMS
 -- teams is a jsonb array: [{ "id": "t1", "name": "...", "color": "#...",
 --                            "score": 0 }, ...]
@@ -476,10 +512,17 @@ alter table public.player_round_stats enable row level security;
 -- `analytics_events` is in this group for a different reason: it is nobody's
 -- business but the host's. The browser writes to it through POST /api/events
 -- (service role, server side) and can never read a single row back.
+--
+-- `scale_hints` is in this group because a hint is written for one fifth of the
+-- dial. A guesser who could read the row would know the answer to within twenty
+-- points, which is worth three game points on its own. It reaches the one player
+-- allowed to see it through GET /api/rooms/:code/secret, the same route that
+-- already refuses everyone but the round's clue-giver.
 alter table public.round_secrets    enable row level security;
 alter table public.guess_values     enable row level security;
 alter table public.player_tokens    enable row level security;
 alter table public.analytics_events enable row level security;
+alter table public.scale_hints      enable row level security;
 
 do $$
 declare
@@ -607,16 +650,24 @@ select
   (select count(*) from pg_tables  where schemaname = 'public')             as tables,
   (select count(*) from pg_views   where schemaname = 'public')             as views,
   (select count(*) from public.scales)                                      as scales_rows,
-  (select count(*) = 12 from pg_tables where schemaname = 'public'
+  -- Zero here is not a failure. An empty `scale_hints` means the clue screen
+  -- offers no starting idea, which is one optional line of UI missing, not a
+  -- broken game — so it is reported but never gates `tables_ok`.
+  (select count(*) from public.scale_hints)                                 as hint_rows,
+  (select count(*) = 13 from pg_tables where schemaname = 'public'
      and tablename in ('scales','rooms','players','player_tokens','rounds',
                        'round_secrets','guesses','guess_values','bets',
-                       'game_results','player_round_stats','analytics_events')) as tables_ok,
+                       'game_results','player_round_stats','analytics_events',
+                       'scale_hints'))                                      as tables_ok,
   (select count(*) = 7 from pg_views where schemaname = 'public'
      and viewname in ('v_best_rounds','v_player_stats','v_scale_stats','v_funnel',
                       'v_dropoff','v_clicks','v_room_dropoff'))             as views_ok,
   (select count(*) = 5 from pg_publication_tables
      where pubname = 'supabase_realtime' and schemaname = 'public'
        and tablename in ('rooms','players','rounds','guesses','bets'))      as realtime,
-  case when (select count(*) from public.scales) = 0
-       then 'now run supabase/scales-seed.sql'
-       else 'schema and seed both in place' end                             as next_step;
+  case
+    when (select count(*) from public.scales) = 0
+      then 'now run supabase/scales-seed.sql'
+    when (select count(*) from public.scale_hints) = 0
+      then 'playable — optionally run supabase/scale-hints-seed.sql for clue hints'
+    else 'schema and both seeds in place' end                               as next_step;

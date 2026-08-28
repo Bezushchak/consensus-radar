@@ -7,6 +7,7 @@ import Poles from "@/components/Poles";
 import * as api from "@/lib/client/api";
 import { track } from "@/lib/client/track";
 import { MAX_CLUE_WORDS, clueErrorKey, validateClue, type ClueReason } from "@/lib/game/clue";
+import { bandOf, type HintText } from "@/lib/game/hint";
 import {
   CLUE_MAX_LEN,
   averageMarker,
@@ -47,7 +48,15 @@ export default function PlayView({
   const amGuesser = amOnActiveTeam && !amClueGiver;
 
   // ---- the secret target: only ever fetched by the clue-giver ----
-  const [secret, setSecret] = useState<{ roundId: string; target: number } | null>(null);
+  //
+  // The pre-written hint comes down with it, because it is just as secret: it
+  // describes one fifth of the dial, so anyone else holding it would know the
+  // answer to within twenty points. Same request, same 403 for everybody else.
+  const [secret, setSecret] = useState<{
+    roundId: string;
+    target: number;
+    hint: HintText | null;
+  } | null>(null);
   useEffect(() => {
     if (!amClueGiver) {
       setSecret(null);
@@ -73,6 +82,12 @@ export default function PlayView({
       : secret && secret.roundId === round.id
         ? secret.target
         : null;
+
+  // The hint has no life after the clue is sent — the guessers are working from
+  // the words now, and showing the idea at reveal would only tell everyone how
+  // much of the clue was written for them. So it is scoped to the fetch, and
+  // that fetch only ever happens for the clue-giver.
+  const hintForMe = secret && secret.roundId === round.id ? secret.hint : null;
 
   // ---- progress ----
   const expectedGuessers = players.filter(
@@ -266,6 +281,7 @@ export default function PlayView({
         <ClueComposer
           round={round}
           target={targetForMe}
+          hint={hintForMe}
           pill={pill}
           run={run}
           busy={busy}
@@ -651,6 +667,7 @@ export default function PlayView({
 function ClueComposer({
   round,
   target,
+  hint,
   pill,
   run,
   busy,
@@ -659,6 +676,13 @@ function ClueComposer({
 }: {
   round: Round;
   target: number | null;
+  /**
+   * The pre-written idea for the band this target sits in, or null when nobody
+   * wrote one. Null is the ordinary case on a deployment where the hint seed was
+   * never run, and it must look like a feature that isn't there rather than one
+   * that broke — hence no placeholder, no error, no empty box.
+   */
+  hint: HintText | null;
   pill: string;
   run: RunAction;
   busy: boolean;
@@ -667,12 +691,43 @@ function ClueComposer({
   /** The countdown, already built by the parent. Null when the room has none. */
   clock: ReactNode;
 }) {
-  const { t } = useLang();
+  const { t, lang } = useLang();
   const [clue, setClue] = useState("");
 
   useEffect(() => {
     setClue("");
   }, [round.id]);
+
+  // The idea stays behind one tap.
+  //
+  // Not because it is expensive — it is already in memory — but because the
+  // game is about your own phrasing, and a suggestion sitting open on the screen
+  // is the phrase most people would send. Closed, it is there for the player who
+  // is stuck and invisible to the one who isn't. There is deliberately no button
+  // to paste it into the box either: copying it out by hand is enough friction
+  // that most people end up changing a word, which is the whole point.
+  const [hintOpen, setHintOpen] = useState(false);
+  const hintCounted = useRef(false);
+  useEffect(() => {
+    setHintOpen(false);
+    hintCounted.current = false;
+  }, [round.id]);
+
+  function openHint() {
+    setHintOpen(true);
+    // Once per round, not once per tap: the question is how many clue-givers
+    // needed help, and a toggle counted twice would answer a different one.
+    if (!hintCounted.current) {
+      hintCounted.current = true;
+      // No clue text, no target, and the band rather than the number — an
+      // analytics row must not be a place the secret leaks to.
+      track("hint_opened", {
+        round: round.round_no,
+        scale: round.scale_key,
+        band: target === null ? -1 : bandOf(target),
+      });
+    }
+  }
 
   // The same validator the server runs, re-run on every keystroke. Live and
   // not on submit, because a player told at the seventh word is editing a
@@ -703,6 +758,13 @@ function ClueComposer({
         round: round.round_no,
         words: check.words,
         ...(blocked.current ? { blocked: blocked.current } : {}),
+        // Whether the idea was on screen when this clue was written. Paired with
+        // `round_revealed.distance` it answers the question the whole catalogue
+        // rests on: do hinted rounds actually land closer, or does the hint just
+        // make people feel better about a guess they would have made anyway.
+        // Only sent when a hint existed to open, so the denominator is rounds
+        // that had one rather than all rounds.
+        ...(hint ? { hint: hintOpen } : {}),
       });
     }
   }
@@ -727,6 +789,21 @@ function ClueComposer({
         <div>{t("targetIs")}</div>
         <b>{target === null ? "…" : `${target}%`}</b>
       </div>
+
+      {hint ? (
+        <div className="hintwrap">
+          {hintOpen ? (
+            <p className="hinttext">
+              {lang === "ua" ? hint.ua : hint.en}
+              <span className="mini">{t("hintCaveat")}</span>
+            </p>
+          ) : (
+            <button className="hintask" data-ev="open-hint" onClick={openHint}>
+              {t("hintAsk")}
+            </button>
+          )}
+        </div>
+      ) : null}
 
       <label className="fl" htmlFor="clue">
         {t("clueLabel")}

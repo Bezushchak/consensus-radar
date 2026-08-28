@@ -73,6 +73,13 @@ const SIDE_EVENTS = [
   // not noticing that it is their turn. Only fires in rooms that chose a clock,
   // so the denominator is never `round_revealed` across all rooms.
   "timer_expired", // props.round, props.phase
+  // The clue-giver asked for the pre-written idea. The one number that decides
+  // whether the hint catalogue was worth generating: against `clue_sent` it is
+  // the share of turns that needed a way in. `props.band` says which fifth of
+  // the dial people get stuck on — the middle band is the one to watch, because
+  // "somewhere in between" is the hardest thing to say without a number.
+  // Deliberately carries no clue text and no target.
+  "hint_opened", // props.round, props.scale, props.band
   "click", // props.target = the data-ev label
   "pointer_heat", // sampled cursor grid, off unless enabled
   "error_shown", // props.message

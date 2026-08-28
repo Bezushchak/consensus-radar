@@ -2,6 +2,7 @@
 
 import { deviceUid } from "./identity";
 import type { Calibration } from "../game/engine";
+import type { HintText } from "../game/hint";
 import type { Identity, LiveGuess, RoomState } from "../types";
 
 /** Thin typed wrapper around the backend. All errors surface as ApiCallError. */
@@ -117,8 +118,14 @@ export function verifyMembership(code: string, identity: Identity) {
   );
 }
 
+/**
+ * The clue-giver's own view of the round: the target, plus the pre-written idea
+ * for the fifth of the dial it sits in. `hint` is null whenever nobody wrote one
+ * for this pair — the seed is optional, so that is the ordinary case, not a
+ * failure. Everyone else gets 403 from this route.
+ */
 export function fetchSecret(code: string, identity: Identity) {
-  return request<{ roundId: string; target: number }>(
+  return request<{ roundId: string; target: number; hint: HintText | null }>(
     `/api/rooms/${encodeURIComponent(code)}/secret`,
     { identity }
   );

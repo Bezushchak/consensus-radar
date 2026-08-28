@@ -7,8 +7,10 @@
  * Three rules, in order of how deterministic they are:
  *
  *   1. No numbers. Digits are the obvious half; the harder half is numbers
- *      spelled out ("forty", "п'ятдесят") and numbers hidden inside a word
- *      ("level5", "тридцятьвідсотків").
+ *      spelled out ("forty", "п'ятдесят"), numbers hidden inside a word
+ *      ("level5", "тридцятьвідсотків"), numerals welded together ("fiftyfive",
+ *      "сорокп'ять") and numbers made vague on purpose ("fiftyish", "in his
+ *      fifties").
  *   2. At most `MAX_CLUE_WORDS` words that carry meaning. Articles,
  *      prepositions and plain conjunctions are free — see `FREE_WORDS`.
  *   3. No words glued together to beat rule 2.
@@ -33,11 +35,20 @@
  * A player who defeats the heuristic is cheating in front of their own team,
  * and the host can already force a reveal and move on.
  *
- * Known gaps, left open knowingly. ASCII Roman numerals are not enforced,
- * because `MIX`, `CD`, `XL` and `VI` are valid Roman numerals and also real
- * words, and `I` is a pronoun — the false rejections would cost more than the
- * evasion. The Unicode Roman numerals (Ⅰ Ⅴ Ⅹ) *are* caught, because they sit
- * in a number category.
+ * Known gaps, left open knowingly.
+ *
+ * ASCII Roman numerals are not enforced, because `MIX`, `CD`, `XL` and `VI` are
+ * valid Roman numerals and also real words, and `I` is a pronoun — the false
+ * rejections would cost more than the evasion. The Unicode Roman numerals
+ * (Ⅰ Ⅴ Ⅹ) *are* caught, because they sit in a number category.
+ *
+ * A number glued to an *ordinary* word still passes below twelve characters:
+ * `fiftykaraoke` is caught as a glued word, `fiftycat` is not caught at all.
+ * Separating that from a real word needs a general dictionary of both
+ * languages, and the alternative — rejecting any token that merely *starts*
+ * with a number word — would reject `tenacious`, `tenor`, `стонога` and
+ * `сорока`. A gap in the direction of letting a clue through is the one this
+ * file chooses every time.
  */
 
 import { cleanClue } from "./engine";
@@ -48,6 +59,7 @@ import {
   NUMBER_EXEMPT,
   NUMBER_STEMS,
   NUMBER_WORDS,
+  VAGUE_SUFFIXES,
 } from "./clue-words";
 
 /** Words that carry meaning. Articles and prepositions are on top of this. */
@@ -73,6 +85,14 @@ const GLUE_MIN_PARTS = 3;
 /** One-letter parts would segment almost anything. */
 const GLUE_MIN_PART_LEN = 2;
 const GLUE_MAX_PART_LEN = Math.max(...Array.from(GLUE_PARTS, (w) => w.length));
+
+/**
+ * Bounds for decomposing a token into number words. Derived from the set rather
+ * than written down, so adding a shorter or longer number word cannot silently
+ * put it out of reach of the search below.
+ */
+const NUMBER_MIN_LEN = Math.min(...Array.from(NUMBER_WORDS, (w) => w.length));
+const NUMBER_MAX_LEN = Math.max(...Array.from(NUMBER_WORDS, (w) => w.length));
 
 /**
  * `\p{N}` rather than `\p{Nd}`: it covers ASCII digits, other scripts' digits,
@@ -140,10 +160,84 @@ export function countClueWords(text: string): number {
   return clueTokens(text).filter((w) => !FREE_WORDS.has(w)).length;
 }
 
+/**
+ * True when the token is nothing but number words run together: `fiftyfive`,
+ * `thirtytwo`, `onehundred`, `fiftypercent`, `twentyfirst`.
+ *
+ * This is the first evasion anyone tries, and until this function existed it
+ * worked. The glue check in `segment` below only examines tokens of twelve
+ * characters or more and only knows the handful of number words that happen to
+ * be in `GLUE_PARTS`, so nine-character `fiftyfive` was never even looked at.
+ * English took the whole of it, because `NUMBER_STEMS` is Ukrainian and English
+ * therefore had exact matches and nothing else. Ukrainian had half of it: a stem
+ * catches `п'ятдесятп'ять`, which starts with п'ят, but not `сорокп'ять`, where
+ * the stem-shaped half is the tail — which is why the nominatives are spelled
+ * out in `NUMBER_WORDS` for the tiling below to use as parts.
+ *
+ * Requiring the *entire* token to decompose is what makes this safe, and it is
+ * why there is no prefix rule here. `tenacious` is ten + acious, `разом` is
+ * раз + ом, `стонога` (centipede) is сто + нога, `halfhearted` is half +
+ * hearted, `tenor` is ten + or — none of them decompose all the way into number
+ * words, so none of them is touched. A prefix rule would reject all five.
+ *
+ * Longest part first with memoised backtracking, same shape as `segment`, so a
+ * decomposition is found whenever one exists rather than whenever a greedy pass
+ * happens to work out — `sixtyone` needs `sixty` before it can try `one`.
+ */
+function isGluedNumber(word: string): boolean {
+  if (word.length < NUMBER_MIN_LEN * 2) return false;
+
+  /** Can the rest of the token, from `at` on, be tiled entirely by number words? */
+  const memo = new Map<number, boolean>();
+  const tiles = (at: number): boolean => {
+    if (at === word.length) return true;
+    const seen = memo.get(at);
+    if (seen !== undefined) return seen;
+
+    let found = false;
+    const longest = Math.min(word.length - at, NUMBER_MAX_LEN);
+    for (let n = longest; n >= NUMBER_MIN_LEN; n--) {
+      if (!NUMBER_WORDS.has(word.slice(at, at + n))) continue;
+      if (tiles(at + n)) {
+        found = true;
+        break;
+      }
+    }
+    memo.set(at, found);
+    return found;
+  };
+
+  // The first part is required to be a *proper* prefix, which is what makes this
+  // "two or more number words" rather than "is a number word". The one-part
+  // answer is `NUMBER_WORDS.has`, and the only caller has already asked it.
+  // Written this way rather than by counting parts inside the walk so that the
+  // memo stays a function of the position alone.
+  const longest = Math.min(word.length - 1, NUMBER_MAX_LEN);
+  for (let n = longest; n >= NUMBER_MIN_LEN; n--) {
+    if (NUMBER_WORDS.has(word.slice(0, n)) && tiles(n)) return true;
+  }
+  return false;
+}
+
 function isNumberWord(word: string): boolean {
   if (NUMBER_EXEMPT.has(word)) return false;
   if (NUMBER_WORDS.has(word)) return true;
-  return NUMBER_STEMS.some((stem) => word.startsWith(stem));
+  if (NUMBER_STEMS.some((stem) => word.startsWith(stem))) return true;
+
+  // "fiftyish" is fifty. Strip the vague tail and ask again, but only once and
+  // only if something usable is left, so this cannot chew a word down to a
+  // coincidence.
+  for (const suffix of VAGUE_SUFFIXES) {
+    if (!word.endsWith(suffix)) continue;
+    const rest = word.slice(0, -suffix.length);
+    if (rest.length >= NUMBER_MIN_LEN && !NUMBER_EXEMPT.has(rest)) {
+      if (NUMBER_WORDS.has(rest) || NUMBER_STEMS.some((stem) => rest.startsWith(stem))) {
+        return true;
+      }
+    }
+  }
+
+  return isGluedNumber(word);
 }
 
 /**

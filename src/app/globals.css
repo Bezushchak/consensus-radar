@@ -482,6 +482,43 @@ svg.gauge {
   font-size: 28px;
   color: var(--gold);
 }
+
+/* The starting idea, under the target. Deliberately quiet — a bordered box the
+   size of the target would read as the thing to do, and the clue is supposed to
+   be the player's. The button is a link, not a button, for the same reason. */
+.hintwrap {
+  max-width: 420px;
+  margin: 8px auto 0;
+  text-align: center;
+}
+.hintask {
+  background: none;
+  border: none;
+  padding: 4px 6px;
+  font: inherit;
+  font-size: 13px;
+  color: var(--muted);
+  text-decoration: underline dotted;
+  text-underline-offset: 3px;
+  cursor: pointer;
+}
+.hintask:hover {
+  color: var(--text);
+}
+.hinttext {
+  font-size: 14px;
+  line-height: 1.45;
+  color: var(--text);
+  background: rgba(122, 162, 255, 0.09);
+  border: 1px solid rgba(122, 162, 255, 0.32);
+  border-radius: 12px;
+  padding: 10px 13px;
+  margin: 6px 0 0;
+}
+.hinttext .mini {
+  display: block;
+  margin-top: 5px;
+}
 .big-target {
   text-align: center;
   font-size: 13px;

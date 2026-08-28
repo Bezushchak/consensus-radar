@@ -68,10 +68,21 @@ export default function Winner({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [room.id]);
 
-  // Read once, on arrival. A failure leaves the card out and says nothing: the
-  // winner screen is the payoff, and it must not carry an error message about
-  // a nice-to-have table.
-  const [calib, setCalib] = useState<Calibration[] | null>(null);
+  /**
+   * Read once, on arrival — in three states rather than two.
+   *
+   * `null` is still reading. An array is an answer, and an *empty* array is a
+   * real answer: a game ended before any round was revealed has nothing
+   * personal to show, and saying so is better than a card that silently is not
+   * there. `"failed"` is a read that never arrived, and that one stays quiet on
+   * purpose — the winner screen is the payoff, and it must not carry an error
+   * message about a nice-to-have table.
+   *
+   * The two used to collapse into `[]` together, which is precisely why nothing
+   * could be said about the empty case: the broken case has to be silent, so
+   * the empty case was silent too.
+   */
+  const [calib, setCalib] = useState<Calibration[] | "failed" | null>(null);
   useEffect(() => {
     let cancelled = false;
     api
@@ -80,12 +91,17 @@ export default function Winner({
         if (!cancelled) setCalib(res.players);
       })
       .catch(() => {
-        if (!cancelled) setCalib([]);
+        if (!cancelled) setCalib("failed");
       });
     return () => {
       cancelled = true;
     };
   }, [room.code, room.id]);
+
+  // Narrowed once here so the markup below asks two plain questions instead of
+  // three. `[]` is truthy, which is what lets "read, and empty" be its own
+  // branch without a second flag.
+  const rows = calib === "failed" ? null : calib;
 
   return (
     <section className="card winner">
@@ -107,7 +123,7 @@ export default function Winner({
       {/* The personal read on a deliberately team-scored game. Sorted by
           average error, so the top row is whoever was easiest to tune into —
           which is a nicer thing to be told than a rank by points would be. */}
-      {calib && calib.length > 0 ? (
+      {rows && rows.length > 0 ? (
         <>
           <h3 style={{ marginTop: 26 }}>{t("calibTitle")}</h3>
           <p className="sub" style={{ marginTop: 0 }}>
@@ -126,7 +142,7 @@ export default function Winner({
                 </tr>
               </thead>
               <tbody>
-                {calib.map((p, i) => (
+                {rows.map((p, i) => (
                   <tr key={p.playerId} className={p.playerId === me.id ? "mine" : ""}>
                     <td className="rank">{p.markers === 0 ? "–" : i + 1}</td>
                     <td>
@@ -151,6 +167,10 @@ export default function Winner({
             </table>
           </div>
         </>
+      ) : rows ? (
+        <p className="sub" style={{ textAlign: "center", marginTop: 26 }}>
+          {t("calibEmpty")}
+        </p>
       ) : null}
 
       <div className="actions" style={{ justifyContent: "center" }}>

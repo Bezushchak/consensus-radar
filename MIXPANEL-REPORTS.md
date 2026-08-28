@@ -324,6 +324,57 @@ path from finishing a game to looking at the board. Table rows are not labelled
 controls, so `click` does not see them at all — `lb_row_open` is the only thing
 that counts a row.
 
+### 12 — Does the starting idea get used
+
+- **Type:** Insights, with the formula editor (`Σ`)
+- **Metric A:** `hint_opened`, Total Events. **Metric B:** `clue_sent`, Total
+  Events, with an **inline filter** `hint` is set.
+- **Formula:** `A/B` — the share of offered ideas that were opened
+- **Breakdown:** `band`, then a second chart broken down by `scale`
+
+The hint catalogue is 2,620 written lines that cost money to generate, and this is
+the one report that says whether they were worth it. `A/B` is the share of
+clue-givers who, given a pre-written idea one tap away, took it: near zero and the
+catalogue is dead weight, near one and the blank box was harder than anyone
+admitted.
+
+**The inline filter on B is the whole report.** `clue_sent` carries `hint` only in
+a round that had an idea to offer, so filtering on "`hint` is set" makes the
+denominator *rounds where the button existed*. Without the filter, B is every
+clue ever written and the ratio measures how much of the catalogue is seeded, not
+whether anybody wants it — the same number falls if you add scales and rises if
+you generate more hints, in both cases while player behaviour is unchanged.
+
+The `band` breakdown is the interesting half. `hint_opened` sends which fifth of
+the dial the target was in, and the shape is a prediction worth testing: the two
+end bands should be the easiest to clue unaided and band 2 — genuinely in
+between, pulled neither way — the hardest. If opens pile up in the middle, the
+game's difficulty is not the scales, it is the centre of every scale, and that is
+an argument for writing better middle hints rather than more pairs. A `band` of
+`-1` means the secret had not arrived when the button was tapped; it should be
+absent, and if it is not, the clue screen is rendering the ask before the fetch
+lands.
+
+`scale` makes this the only Mixpanel report with a per-pair breakdown of any kind
+(see *what is deliberately not available*, below). Read it as which pairs
+*intimidate* people, not which ones they get wrong — those are different lists,
+and only the first one is in Mixpanel.
+
+**Trap:** this report cannot distinguish "nobody wanted the hint" from "no hint
+was there to want", unless the filter is on. If the chart is flat zero, check
+`hint_rows` on `/api/health` before concluding anything about players — a
+deployment that never loaded `supabase/scale-hints-seed.sql` produces exactly this
+picture, correctly.
+
+**The harder question — does the hint make the clue worse — is a cohort
+comparison, not a breakdown.** Whether hinted rounds land closer lives across two
+events (`hint` on `clue_sent`, `distance` on `round_revealed`), so: filter
+`clue_sent` to `hint` is `true` → View Users → save as a cohort, then run report 5
+with that cohort as a breakdown. Mind what that measures — a cohort is devices,
+not rounds, so it compares people who ever used a hint against people who never
+did, which is a coarser thing than comparing the rounds themselves. It is enough
+to notice a large effect and not enough to argue about a small one.
+
 **If you are on the free plan and can only keep five:** the host funnel, the guest
 funnel, the error queue, round quality, and setup time. Configuration, clicks and
 the rescue-hatch ratios can be rebuilt in a minute when a specific question comes
@@ -405,10 +456,18 @@ plan and a `$group_key` on every event.
 
 ## Before adding a report, check it is answerable
 
-Two questions look answerable and are not, because the data is on separate
-events: *do shorter clues score better* (`words` is on `clue_sent`, `points` is on
-`round_revealed`) and *which scales are hardest* (no event carries `scale_key`).
-Both are answerable in Supabase today — `v_scale_stats` and the Scales
+Three questions look answerable and are not, all for the same reason: the two
+halves are on separate events, and Mixpanel cannot join two events on a round.
+*Do shorter clues score better* — `words` is on `clue_sent`, `points` is on
+`round_revealed`. *Does the pre-written idea make the clue better* — `hint` is on
+`clue_sent`, `distance` is on `round_revealed`; the cohort trick in report 12 is a
+per-device approximation of a per-round question, which is why it is written up as
+a comparison to notice something with rather than a number to quote. *Which
+scales are hardest* — `hint_opened` is the only event carrying a scale key, and it
+fires when somebody asks for help, not when a round is scored, so it ranks
+intimidating pairs and not missed ones.
+
+All three are answerable in Supabase today — `v_scale_stats` and the Scales
 leaderboard — and `ANALYTICS.md` Part 3 lists what a code change would need to
 move them into Mixpanel. Do not build a creative report to work around a missing
 event; add the event or use the database.

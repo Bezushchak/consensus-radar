@@ -61,6 +61,10 @@ export const STRINGS: Dict = {
   saveSettings: { ua: "Зберегти налаштування", en: "Save settings" },
   settingsSaved: { ua: "Налаштування збережено.", en: "Settings saved." },
   leaveBtn: { ua: "Вийти з кімнати", en: "Leave room" },
+  leaveConfirm: {
+    ua: "Гра ще йде. Якщо вийти зараз, ваш маркер у цьому раунді не зарахується, а якщо clue давали ви — раунд закриють без вас. Точно виходимо?",
+    en: "The game is still on. Leaving now means your marker in this round does not count, and if you were the clue-giver the round will be closed without you. Leave anyway?",
+  },
 
   // ---- phase clocks (lobby pickers) ----
   timersLabel: { ua: "Таймери", en: "Time limits" },
@@ -123,6 +127,15 @@ export const STRINGS: Dict = {
     en: "Up to {max} words, no numbers. Articles and prepositions are free.",
   },
   clueWordCount: { ua: "{count} з {max}", en: "{count} of {max}" },
+  // The starting idea. Phrased as a question the stuck player is already asking
+  // themselves, and the caveat is there because the hint knows the band, not the
+  // number — someone who copies it word for word lands somewhere in a
+  // twenty-point stretch, which is worth three points and not five.
+  hintAsk: { ua: "Не знаєте, з чого почати?", en: "Not sure where to start?" },
+  hintCaveat: {
+    ua: "Це лише напрямок — своїми словами вийде точніше.",
+    en: "Just a direction — your own words will land closer.",
+  },
   waitClue: { ua: "{name} придумує clue…", en: "{name} is thinking of a clue…" },
   youGiveClue: { ua: "Ви даєте clue цього раунду", en: "You're the clue-giver this round" },
   clueGiverIs: { ua: "Clue дає {name} ({team})", en: "{name} from {team} gives the clue" },

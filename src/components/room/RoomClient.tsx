@@ -106,6 +106,38 @@ export default function RoomClient({ code }: { code: string }) {
     }
   }, [run, state, identity]);
 
+  /**
+   * Hand the seat back and go home.
+   *
+   * Deliberately not routed through `run`: `leaveRoom` answers `{ ok: true }`
+   * and not a room state, so `run` would fall through to a refetch — and a
+   * refetch of a room this device is no longer in renders the join screen for a
+   * moment on the way out. Clearing the identity first is also what stops the
+   * home page offering to resume a room the player just walked out of.
+   *
+   * Mid-game it asks first. Leaving during a round costs the other people in it
+   * — the team is short a marker, and a clue-giver who walks has to have the
+   * round rescued — so this is the one control here worth a second tap.
+   */
+  const leaveAndGoHome = useCallback(async () => {
+    if (!identity) return;
+    if (state?.room.status === "playing" && !window.confirm(t("leaveConfirm"))) return;
+
+    setBusy(true);
+    setActionError(null);
+    try {
+      await api.act(code, "leave", identity);
+      clearIdentity(code);
+      // A full navigation rather than a router push: it is the one certain way
+      // to stop this page's poll, its realtime channel and its heartbeat, none
+      // of which have any business still running for a room we have left.
+      window.location.assign("/");
+    } catch (e) {
+      setActionError(e instanceof Error ? e.message : "Could not leave the room");
+      setBusy(false);
+    }
+  }, [code, identity, state, t]);
+
   const me = useMemo(
     () => (identity && state ? state.players.find((p) => p.id === identity.playerId) ?? null : null),
     [identity, state]
@@ -321,6 +353,22 @@ export default function RoomClient({ code }: { code: string }) {
           ) : null}
         </section>
       ) : null}
+
+      {/* Quiet, small, and present in every phase. The action behind it has
+          been reachable by the API since the round-rescue work and by nothing at
+          all in the interface: without it the only way out of a room was to
+          close the tab, which is precisely the case the server cannot tell from
+          a player who is thinking. */}
+      <div className="actions" style={{ justifyContent: "center" }}>
+        <button
+          className="btn ghost sm"
+          data-ev="leave-room"
+          disabled={busy}
+          onClick={() => void leaveAndGoHome()}
+        >
+          {t("leaveBtn")}
+        </button>
+      </div>
 
       <div className="footer">
         {lang === "ua" ? "Кімната" : "Room"} {room.code} ·{" "}

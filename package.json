@@ -11,6 +11,8 @@
     "typecheck": "tsc --noEmit",
     "test": "tsx --test tests/*.test.ts",
     "scales:sql": "tsx scripts/gen-scales-sql.ts",
+    "hints:gen": "tsx scripts/gen-scale-hints.ts",
+    "hints:sql": "tsx scripts/gen-hints-sql.ts",
     "mixpanel:test": "tsx scripts/mixpanel-test.ts",
     "verify": "npm run typecheck && npm run test && npm run build"
   },
