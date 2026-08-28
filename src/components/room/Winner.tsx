@@ -1,8 +1,10 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useLang } from "@/components/LangProvider";
+import Podium from "@/components/leaderboard/Podium";
+import type { LbEntry } from "@/components/leaderboard/types";
 import Scoreboard from "@/components/Scoreboard";
 import * as api from "@/lib/client/api";
 import { track } from "@/lib/client/track";
@@ -23,7 +25,32 @@ export default function Winner({
 }) {
   const { t } = useLang();
   const { room, players } = state;
-  const top = [...room.teams].sort((a, b) => b.score - a.score)[0];
+  const ranked = useMemo(() => [...room.teams].sort((a, b) => b.score - a.score), [room.teams]);
+  const top = ranked[0];
+
+  /**
+   * The final standings, on steps — the same component the leaderboard opens
+   * with, because this is the same moment: a result worth looking at rather than
+   * a table worth reading. Non-interactive here (no `onPick`): everything a
+   * step could open is already further down this very page.
+   */
+  const podium = useMemo<LbEntry[]>(
+    () =>
+      ranked.slice(0, 3).map((team, i) => {
+        const roster = players.filter((p) => p.team_id === team.id).map((p) => p.name);
+        return {
+          key: team.id,
+          rank: i + 1,
+          title: team.name,
+          subtitle: roster.join(", ") || null,
+          headline: String(team.score),
+          headlineLabel: t("pts"),
+          crown: i === 0,
+          mine: me.team_id !== null && team.id === me.team_id,
+        };
+      }),
+    [ranked, players, me.team_id, t]
+  );
 
   // The last step of the funnel: a game that actually reached an end.
   useEffect(() => {
@@ -56,7 +83,9 @@ export default function Winner({
       <h2>{t("winnerTitle", { team: room.winner_team_name ?? top?.name ?? "" })}</h2>
       <p className="sub">{t("winnerSub")}</p>
 
-      <Scoreboard teams={room.teams} players={players} sorted />
+      <Podium entries={podium} youLabel={t("lbYou")} />
+
+      <Scoreboard teams={room.teams} players={players} sorted myTeamId={me.team_id} />
 
       <div className="ok" style={{ textAlign: "center" }}>
         {t("resultsSaved")}

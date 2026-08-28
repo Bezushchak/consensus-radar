@@ -107,6 +107,44 @@ export function betIsCorrect(target: number, marker: number, side: BetSide): boo
   return side === "left" ? marker < target : marker > target;
 }
 
+/**
+ * What a watching team scores for its side bet: all of it, or none of it.
+ *
+ * Unanimity, not a majority. Under the old majority rule a pair could click
+ * opposite sides and still collect the point, which made the bet free — you
+ * could not lose it, so there was nothing to talk about and nothing to get
+ * wrong. Requiring one voice restores the only interesting part: the team has
+ * to agree out loud before anybody taps.
+ *
+ * Abstaining does not block the team. Every bet counted here was placed, so
+ * "all of them are right" is the same statement as "they agreed, and on the
+ * correct side" — `correct` is derived from one target and one marker, so two
+ * bets can only differ if their sides did. Someone who never voted is silent
+ * rather than opposed, which is also how the auto-marker treats a silent
+ * guesser.
+ */
+export function teamBetPoints(bets: Array<{ correct: boolean }>): number {
+  if (bets.length === 0) return 0;
+  return bets.every((b) => b.correct) ? BET_POINTS : 0;
+}
+
+/** Where a team's bets currently stand — for the screen, before the reveal. */
+export type BetConsensus = "none" | "left" | "right" | "split";
+
+/**
+ * Folds the sides a team has picked into the one thing its members need to see.
+ *
+ * Deliberately says nothing about whether the side is right: the target is
+ * secret until the reveal, so the only question this can answer before then is
+ * whether the team is speaking with one voice. `split` is the state worth a
+ * warning, because it is now worth zero.
+ */
+export function betConsensus(sides: BetSide[]): BetConsensus {
+  if (sides.length === 0) return "none";
+  const first = sides[0];
+  return sides.every((s) => s === first) ? first : "split";
+}
+
 /** The team's marker is the average of everyone who submitted. */
 export function averageMarker(values: number[]): number {
   if (values.length === 0) return 50;
@@ -301,6 +339,37 @@ export function clueGiverIsAway(
  */
 export function canSkipRound(phase: Phase): boolean {
   return phase !== "reveal";
+}
+
+/**
+ * May this player drive the round — reveal it, skip it, start the next one?
+ *
+ * Only the clue-giver, and the reason is that a round belongs to one person at
+ * a time. The clue-giver is the only player who knows whether the table has
+ * finished talking, and they are the only one for whom revealing early costs
+ * something. When the host held the same buttons, four other people watched a
+ * round end for reasons they were not part of — and the host is very often on
+ * another team, which made it somebody else's turn being ended.
+ *
+ * The rotation is what makes this fair rather than a privilege: a different
+ * person gives the clue every round, so everybody holds the buttons in turn.
+ *
+ * The exception is the same dead end `canSkipRound` exists for. A clue-giver
+ * who closes their tab would otherwise freeze the round permanently, so once
+ * they have gone quiet the buttons open to whoever is left — not to the host
+ * specifically, who may well be the person who left. A null id, or an id with
+ * no matching player, counts as away for the same reason it does in
+ * `clueGiverIsAway`: the seat the round is waiting on is empty.
+ */
+export function mayControlRound(
+  round: { clue_giver_id: string | null },
+  playerId: string,
+  players: Player[],
+  now: number,
+  awayAfter = AWAY_AFTER_MS
+): boolean {
+  if (round.clue_giver_id !== null && round.clue_giver_id === playerId) return true;
+  return clueGiverIsAway(players, round.clue_giver_id, now, awayAfter);
 }
 
 // ---------------------------------------------------------------------

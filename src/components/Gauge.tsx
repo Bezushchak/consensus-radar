@@ -58,9 +58,26 @@ export interface GaugeProps {
   marker?: number | null;
   /** Extra faint needles — used at reveal to show each player's guess. */
   ghosts?: { value: number; label?: string }[];
+  /**
+   * Where the ghosts average out to — the position the round will actually be
+   * scored on.
+   *
+   * A watching team sees every marker as it lands, and five equally faint
+   * needles is a picture with no answer in it: the thing they are betting on is
+   * not any one of them, it is the mean, and the mean is the one line that was
+   * not drawn. Passing it here rather than through `marker` keeps them
+   * distinguishable — this is a derived, still-moving figure, whereas `marker`
+   * at the reveal is final.
+   */
+  average?: number | null;
 }
 
-export default function Gauge({ target = null, marker = null, ghosts = [] }: GaugeProps) {
+export default function Gauge({
+  target = null,
+  marker = null,
+  ghosts = [],
+  average = null,
+}: GaugeProps) {
   const ring =
     `${arcPath(CX, CY, R, 180, 0)} L ${polar(CX, CY, RIN, 0).join(" ")} ` +
     `${arcPathRev(CX, CY, RIN, 0, 180)} Z`;
@@ -105,6 +122,24 @@ export default function Gauge({ target = null, marker = null, ghosts = [] }: Gau
       {ticks}
       <circle cx={CX} cy={CY} r={RIN} fill="#0c1020" stroke="#2c3566" strokeWidth={1.5} />
       {ghosts.map((g) => needle(g.value, "rgba(255,255,255,.32)", 2, 9))}
+      {/* Drawn over the faint ones and under `marker`, which is the order the
+          three mean something in: individual answers, the number they add up
+          to, and — once the round is over — the position that was scored. The
+          rim disc is what makes it findable at a glance on a phone, where a
+          needle among needles is just another line. */}
+      {average !== null && average !== undefined ? (
+        <g>
+          {needle(average, "#5ee0c5", 4, 16)}
+          <circle
+            cx={polar(CX, CY, R - 8, ang(average))[0]}
+            cy={polar(CX, CY, R - 8, ang(average))[1]}
+            r={11}
+            fill="#5ee0c5"
+            stroke="#06121f"
+            strokeWidth={2.5}
+          />
+        </g>
+      ) : null}
       {marker !== null && marker !== undefined ? needle(marker, "#ffffff", 3, 18) : null}
       <circle cx={CX} cy={CY} r={14} fill="#5ee0c5" />
       <circle cx={CX} cy={CY} r={6} fill="#06121f" />

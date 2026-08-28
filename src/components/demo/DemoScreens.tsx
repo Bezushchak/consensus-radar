@@ -143,7 +143,7 @@ export default function DemoScreens({ s, mark }: { s: DemoState; mark: Mark }) {
           <section className="card">
             <h3>{t("settingsTitle")}</h3>
             <p className="sub" style={{ margin: "6px 0 0" }}>
-              {t("targetLabel")}: <b>{DEMO.goal}</b> · {t("betsLabel")}
+              {t("targetLabel")}: <b>{DEMO.goal}</b> · {t("demoBetsOn")}
             </p>
             <div className="actions">
               <button ref={mark("start-game")} className={btn("start-game", "wide")} tabIndex={-1}>

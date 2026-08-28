@@ -7,7 +7,14 @@ import Poles from "@/components/Poles";
 import * as api from "@/lib/client/api";
 import { track } from "@/lib/client/track";
 import { MAX_CLUE_WORDS, clueErrorKey, validateClue, type ClueReason } from "@/lib/game/clue";
-import { CLUE_MAX_LEN, clueGiverIsAway, phaseSeconds, scoreFor } from "@/lib/game/engine";
+import {
+  CLUE_MAX_LEN,
+  averageMarker,
+  betConsensus,
+  mayControlRound,
+  phaseSeconds,
+  scoreFor,
+} from "@/lib/game/engine";
 import PhaseTimer from "./PhaseTimer";
 import type { RunAction } from "./RoomClient";
 import type { Identity, LiveGuess, Player, RoomState, Round } from "@/lib/types";
@@ -74,6 +81,19 @@ export default function PlayView({
   const myGuess = guesses.find((g) => g.player_id === me.id) ?? null;
   const myBet = bets.find((b) => b.player_id === me.id) ?? null;
 
+  // My own team's bets, and whether they agree.
+  //
+  // The point costs nothing to win and everything to split, so the team has to
+  // be able to see itself. Without this the rule is invisible: two people tap
+  // opposite sides, both get a cheerful "bet placed", and the round quietly
+  // pays nothing. `state.bets` already carries every side to every device — the
+  // secret is the target, not who called which way — so this needs no new
+  // endpoint.
+  const myTeammates = players.filter((p) => p.team_id !== null && p.team_id === me.team_id);
+  const myTeamBets = bets.filter((b) => b.team_id === me.team_id);
+  const consensus = betConsensus(myTeamBets.map((b) => b.side));
+  const sideByPlayer = new Map(myTeamBets.map((b) => [b.player_id, b.side]));
+
   // ---- the active team's markers: only ever fetched by a watching team ----
   //
   // The room state carries who has answered but not what they answered, so the
@@ -139,6 +159,16 @@ export default function PlayView({
     return byPlayer;
   }, [watched]);
 
+  // The number the bet is actually about. Computed with the same helper the
+  // server scores with, so what the dial shows and what the reveal uses cannot
+  // drift; it moves as more markers land, which is the point — the last person
+  // to lock in can swing the side, and a betting team should be able to see
+  // that happening rather than be told about it afterwards.
+  const watchedAverage = useMemo(
+    () => (watched.length > 0 ? averageMarker(watched.map((g) => g.value)) : null),
+    [watched]
+  );
+
   const [slider, setSlider] = useState(50);
   useEffect(() => setSlider(50), [round.id]);
 
@@ -156,14 +186,14 @@ export default function PlayView({
 
   const pill = `${t("round")} ${round.round_no} · ${round.team_name}`;
 
-  // The same rule the server enforces in `skipRound`, so the button is only
-  // ever offered to someone it will actually work for. Read at render rather
-  // than on a timer: every tab refetches the room at least every 15 seconds,
-  // which is close enough for a two-minute threshold.
-  const maySkip =
-    me.is_host ||
-    amClueGiver ||
-    (round.phase === "clue" && clueGiverIsAway(players, round.clue_giver_id, Date.now()));
+  // Who drives this round: reveal, skip, next. The clue-giver, and nobody else
+  // — the same predicate the three server actions enforce, so a button is only
+  // ever drawn for someone it will actually work for, and everybody else does
+  // not have to wonder whether they are supposed to press something. Read at
+  // render rather than on a timer: every tab refetches the room at least every
+  // 15 seconds, which is close enough for a two-minute threshold.
+  const mayDrive = mayControlRound(round, me.id, players, Date.now());
+  const maySkip = mayDrive;
 
   // ---- the phase clock ----
   //
@@ -316,10 +346,28 @@ export default function PlayView({
             target={amClueGiver ? targetForMe : null}
             marker={amGuesser ? slider : null}
             ghosts={watchedGhosts}
+            average={watchedAverage}
           />
         </div>
 
-        {amWatcher ? <p className="sub center">{t("watchMarkers")}</p> : null}
+        {amWatcher ? (
+          <>
+            {/* The figure as well as the needle. A needle answers "roughly
+                where", and the bet is decided by which side of a line it falls
+                on — so the number is the thing, and the count next to it says
+                how much more it can still move. */}
+            {watchedAverage !== null ? (
+              <div className="avgline">
+                <span className="dot" />
+                <b>{watchedAverage}%</b>
+                <span className="mini">
+                  {t("avgFrom", { n: watched.length, total: expectedGuessers.length })}
+                </span>
+              </div>
+            ) : null}
+            <p className="sub center">{t("watchMarkers")}</p>
+          </>
+        ) : null}
 
         {amGuesser ? (
           <>
@@ -405,6 +453,31 @@ export default function PlayView({
                 {t("betPlaced", { side: t(myBet.side === "left" ? "sideLeft" : "sideRight") })}
               </div>
             ) : null}
+
+            {/* The team looking at itself. Everyone on this side of the table
+                has to call the same side for the point to exist, so who has
+                voted and which way is not a detail — it is the whole
+                negotiation, and it has to be on the screen while there is still
+                time to change a mind. */}
+            <div className="chiplist" style={{ justifyContent: "center", marginTop: 4 }}>
+              {myTeammates.map((p) => {
+                const side = sideByPlayer.get(p.id);
+                return (
+                  <span key={p.id} className={`chip${side ? " done" : ""}`}>
+                    {side ? (side === "left" ? "◀ " : "▶ ") : "… "}
+                    {p.name}
+                    {p.id === me.id ? <span className="mini"> · {t("lbYou")}</span> : null}
+                  </span>
+                );
+              })}
+            </div>
+            {consensus === "split" ? (
+              <div className="err">{t("betSplit")}</div>
+            ) : consensus !== "none" && myTeamBets.length === myTeammates.length ? (
+              <div className="ok" style={{ textAlign: "center" }}>
+                {t("betAgreed", { side: t(consensus === "left" ? "sideLeft" : "sideRight") })}
+              </div>
+            ) : null}
           </>
         ) : null}
 
@@ -422,7 +495,7 @@ export default function PlayView({
           />
         )}
 
-        {me.is_host || amClueGiver ? (
+        {mayDrive ? (
           <div className="actions">
             <button
               className="btn ghost wide"
@@ -453,6 +526,12 @@ export default function PlayView({
       : "msgFar";
 
   const myTeamBetPoints = detail?.team_points?.[me.team_id ?? ""] ?? 0;
+  const myDetailBets = (detail?.bets ?? []).filter((b) => b.team_id === me.team_id);
+  // A team that voted and scored nothing is owed an explanation, and there are
+  // two different ones. Everybody wrong is just a wrong call; some right and
+  // some wrong is the new rule biting, and that is the one people will argue
+  // about unless the card says it.
+  const myTeamSplit = betConsensus(myDetailBets.map((b) => b.side)) === "split";
 
   // A round the clue clock closed. There is no clue, no marker and no distance
   // — writing any of them would have been inventing them — so the card says
@@ -540,11 +619,13 @@ export default function PlayView({
             <div className="ok" style={{ textAlign: "center" }}>
               +{myTeamBetPoints} {t("pts")}
             </div>
+          ) : !amOnActiveTeam && myTeamSplit ? (
+            <div className="err">{t("betSplitLost")}</div>
           ) : null}
         </>
       ) : null}
 
-      {me.is_host || amClueGiver ? (
+      {mayDrive ? (
         <div className="actions">
           <button
             className="btn wide"
@@ -558,7 +639,7 @@ export default function PlayView({
       ) : (
         <p className="waiting">
           <span className="spin" />
-          {t("waitNext")}
+          {t("waitNext", { name: round.clue_giver_name ?? "?" })}
         </p>
       )}
     </section>

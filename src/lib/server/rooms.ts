@@ -17,7 +17,6 @@ import {
   cleanTimerSeconds,
   cleanUid,
   clampSlider,
-  clueGiverIsAway,
   deadlineFor,
   firstTeamIndexWithPlayers,
   foldCalibration,
@@ -25,6 +24,7 @@ import {
   hostIsAway,
   leader,
   makeTeams,
+  mayControlRound,
   mayExpire,
   nextTeamIndex,
   pickClueGiver,
@@ -34,6 +34,7 @@ import {
   randomTarget,
   randomToken,
   scoreFor,
+  teamBetPoints,
   teamsAtGoal,
   underStaffedTeams,
   type Calibration,
@@ -854,14 +855,20 @@ async function maybeAutoReveal(room: Room, round: Round): Promise<void> {
 }
 
 /**
- * Force the reveal (host button) — used when someone is idle, or when the
- * active team is a single player who is also the clue-giver.
+ * Force the reveal — the clue-giver's button, used when someone is idle, or
+ * when the active team is a single player who is also the clue-giver.
+ *
+ * Theirs and not the host's: it ends their own turn, and they are the only
+ * person who can tell whether the table has stopped talking. `mayControlRound`
+ * keeps the escape hatch for a clue-giver who has gone quiet.
  */
 export async function forceReveal(code: string, playerId: string, token: string) {
   const { room, player } = await authenticate(code, playerId, token);
   const round = await requireCurrentRound(room);
-  const mayReveal = player.is_host || player.id === round.clue_giver_id;
-  if (!mayReveal) throw new ApiError(403, "Only the host or the clue-giver can reveal");
+  const players = await getPlayers(room.id);
+  if (!mayControlRound(round, player.id, players, Date.now())) {
+    throw new ApiError(403, "Only this round's clue-giver can reveal it");
+  }
   if (round.phase === "clue") throw new ApiError(409, "The clue has not been given yet");
   if (round.phase === "reveal") return getState(code);
 
@@ -944,18 +951,17 @@ async function revealRound(room: Room, round: Round, timedOut?: Phase): Promise<
     })
   );
 
-  // Points per team: active team gets the band score; other teams get one
-  // point if the majority of their players called the side correctly.
+  // Points per team: the active team gets the band score; every other team gets
+  // one point only if it spoke with a single voice and that voice was right.
+  // `teamBetPoints` holds the rule — unanimity, not a majority — so the reason
+  // it is all-or-nothing is written down once, next to the tests for it.
   const teamPoints: Record<string, number> = {};
   for (const team of room.teams) teamPoints[team.id] = 0;
   teamPoints[round.team_id] = pts;
 
   for (const team of room.teams) {
     if (team.id === round.team_id) continue;
-    const mine = detailBets.filter((b) => b.team_id === team.id);
-    if (mine.length === 0) continue;
-    const right = mine.filter((b) => b.correct).length;
-    if (right * 2 > mine.length) teamPoints[team.id] += BET_POINTS;
+    teamPoints[team.id] += teamBetPoints(detailBets.filter((b) => b.team_id === team.id));
   }
 
   const teams = room.teams.map((team) => ({
@@ -1019,6 +1025,11 @@ async function revealRound(room: Room, round: Round, timedOut?: Phase): Promise<
       scale_key: round.scale_key,
     });
   }
+  // Personal credit for a personal call. A player whose side was right is
+  // recorded as right even when a teammate voted the other way and the team
+  // therefore scored nothing — the same separation the guess rows already make,
+  // where each marker keeps its own distance although the points are the team's
+  // average. The team's actual haul lives in `reveal_detail.team_points`.
   for (const b of detailBets) {
     stats.push({
       round_id: round.id,
@@ -1063,10 +1074,16 @@ export async function nextRound(code: string, playerId: string, token: string) {
   const round = await requireCurrentRound(room);
   if (round.phase !== "reveal") throw new ApiError(409, "The current round is not finished");
 
-  const mayAdvance = player.is_host || player.id === round.clue_giver_id;
-  if (!mayAdvance) throw new ApiError(403, "Only the host or the clue-giver can start the next round");
+  // The clue-giver's again, and for a reason the reveal button does not have:
+  // the result card is the only place the table gets to look at what happened,
+  // and clearing it belongs to the person whose round it was rather than to
+  // whoever reaches for a button first.
+  const players = await getPlayers(room.id);
+  if (!mayControlRound(round, player.id, players, Date.now())) {
+    throw new ApiError(403, "Only this round's clue-giver can start the next round");
+  }
 
-  const next = nextPlayableTeam(room, await getPlayers(room.id));
+  const next = nextPlayableTeam(room, players);
 
   const { error } = await admin()
     .from("rooms")
@@ -1101,20 +1118,15 @@ export async function skipRound(code: string, playerId: string, token: string) {
     throw new ApiError(409, "This round is already revealed — start the next one instead");
   }
 
-  // Who may. The host and the clue-giver always, as with reveal and next —
-  // plus, in the clue phase only, anybody in the room once the clue-giver has
-  // gone quiet. That last clause is what actually unsticks the dead end: the
-  // people staring at the empty dial are usually neither the host nor the
-  // clue-giver, and it is safe precisely there, because before a clue exists
-  // the round holds nothing worth protecting. In the guess phase markers are
-  // already down, so it stays with the host — who has `reveal` as the gentler
-  // option anyway.
+  // Who may: the same rule as reveal and next, from the same predicate. The
+  // clue-giver — it is their scale to abandon — and, once they have gone quiet,
+  // anybody in the room. That second clause is what unsticks the dead end: the
+  // people staring at an empty dial are usually not the clue-giver, and the
+  // host is no more likely to still be holding their phone than anyone else.
   const players = await getPlayers(room.id);
-  const maySkip =
-    player.is_host ||
-    player.id === round.clue_giver_id ||
-    (round.phase === "clue" && clueGiverIsAway(players, round.clue_giver_id, Date.now()));
-  if (!maySkip) throw new ApiError(403, "Only the host or the clue-giver can skip the round");
+  if (!mayControlRound(round, player.id, players, Date.now())) {
+    throw new ApiError(403, "Only this round's clue-giver can skip it");
+  }
 
   // Chosen before anything is destroyed, so a room where no team can play is
   // refused with its round intact rather than left with none.

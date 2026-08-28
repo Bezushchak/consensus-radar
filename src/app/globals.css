@@ -296,6 +296,33 @@ svg.gauge {
   overflow: hidden;
   pointer-events: none;
 }
+/* The number under the dial that a watching team is actually betting on.
+   Tabular figures because it moves while markers land, and a jumping digit
+   width reads as a glitch rather than as an update. The dot matches the
+   accent needle it names. */
+.avgline {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  margin-top: 10px;
+  font-size: 15px;
+  color: var(--ink);
+  font-variant-numeric: tabular-nums;
+}
+.avgline b {
+  font-size: 19px;
+  font-weight: 800;
+  color: var(--accent);
+}
+.avgline .dot {
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 0 3px rgba(94, 224, 197, 0.18);
+  flex: none;
+}
 .poles {
   display: flex;
   justify-content: space-between;
@@ -834,9 +861,6 @@ table.lb .rank {
   font-weight: 800;
   width: 46px;
 }
-table.lb tr:nth-child(1) .rank {
-  color: var(--gold);
-}
 /* Your own row. Two people called Dmytro are two rows, and this is the half of
    the answer that does not need reading: one of them is lit up. */
 table.lb tr.mine td {
@@ -844,6 +868,18 @@ table.lb tr.mine td {
 }
 table.lb tr.mine td:first-child {
   box-shadow: inset 3px 0 0 var(--accent);
+}
+/* Every row opens its own card, so every row has to look like it does. */
+table.lb tr.clickable {
+  cursor: pointer;
+  transition: background 0.12s ease;
+}
+table.lb tr.clickable:hover td {
+  background: rgba(122, 162, 255, 0.09);
+}
+table.lb tr.clickable:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
 }
 .empty {
   color: var(--muted);
@@ -854,6 +890,305 @@ table.lb tr.mine td:first-child {
 .mini {
   font-size: 12px;
   color: var(--muted);
+}
+
+/* ---------------------------------------------------------------------
+   Leaderboard: the podium and the drill-down sheet.
+
+   The steps are laid out 2-1-3 and given three different heights, so the shape
+   carries the ranking before any number is read. Gold, silver and bronze are
+   real gradients rather than tinted panels because this is the one screen in
+   the app whose job is to feel like a prize; everywhere else the palette stays
+   flat on purpose.
+
+   `align-items: end` is what makes the steps line up along the floor instead of
+   along their tops, which is the difference between a podium and three cards.
+   --------------------------------------------------------------------- */
+.podium {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  align-items: end;
+  gap: 10px;
+  margin: 20px 0 6px;
+}
+.podium.n1 {
+  grid-template-columns: minmax(0, 260px);
+  justify-content: center;
+}
+.podium.n2 {
+  grid-template-columns: repeat(2, minmax(0, 200px));
+  justify-content: center;
+}
+.pod {
+  appearance: none;
+  font-family: inherit;
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 5px;
+  padding: 14px 10px 0;
+  border-radius: 18px 18px 0 0;
+  border: 1px solid var(--line);
+  border-bottom: 0;
+  background: linear-gradient(180deg, rgba(34, 43, 82, 0.9), rgba(12, 20, 46, 0.7));
+  color: var(--ink);
+  text-align: center;
+  transition: transform 0.1s ease, filter 0.15s ease;
+  min-width: 0;
+}
+.pod:hover {
+  filter: brightness(1.1);
+}
+/* The end-of-game podium: the same picture with nothing to press. */
+.pod.flat {
+  cursor: default;
+}
+.pod.flat:hover {
+  filter: none;
+}
+.pod.flat:active {
+  transform: none;
+}
+.pod:active {
+  transform: translateY(2px);
+}
+.pod:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.pod .medal {
+  font-size: 22px;
+  line-height: 1;
+}
+/* The disc. Initials, a crown or an emoji — whichever the board gave it. */
+.pod .face {
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  font-size: 17px;
+  font-weight: 800;
+  letter-spacing: 0.5px;
+  color: #06121f;
+  background: linear-gradient(135deg, var(--accent), var(--accent2));
+  box-shadow: var(--shadow);
+}
+.pod .who {
+  font-weight: 800;
+  font-size: 14px;
+  line-height: 1.25;
+  overflow-wrap: anywhere;
+  /* Two lines, then an ellipsis: a long clue is a legitimate title here and it
+     must not be allowed to shove the neighbouring steps out of alignment. */
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.pod .podsub {
+  font-size: 11px;
+  color: var(--muted);
+  line-height: 1.3;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.pod .podyou {
+  font-size: 11px;
+  font-weight: 800;
+  color: var(--accent);
+}
+/* The step itself: the block under the name that gives the podium its height. */
+.pod .step {
+  margin-top: 8px;
+  width: 100%;
+  border-radius: 12px 12px 0 0;
+  padding: 8px 6px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1px;
+}
+.pod .step b {
+  font-size: 22px;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.1;
+}
+.pod .step .steplabel {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  opacity: 0.75;
+}
+.pod.p1 .step {
+  height: 86px;
+  background: linear-gradient(180deg, rgba(255, 207, 92, 0.34), rgba(255, 207, 92, 0.08));
+  border: 1px solid rgba(255, 207, 92, 0.55);
+  border-bottom: 0;
+  color: #ffe9b0;
+}
+.pod.p2 .step {
+  height: 62px;
+  background: linear-gradient(180deg, rgba(200, 214, 255, 0.26), rgba(200, 214, 255, 0.05));
+  border: 1px solid rgba(200, 214, 255, 0.4);
+  border-bottom: 0;
+  color: #e6ecff;
+}
+.pod.p3 .step {
+  height: 46px;
+  background: linear-gradient(180deg, rgba(255, 154, 108, 0.26), rgba(255, 154, 108, 0.05));
+  border: 1px solid rgba(255, 154, 108, 0.42);
+  border-bottom: 0;
+  color: #ffd8c2;
+}
+.pod.p1 .face {
+  background: linear-gradient(135deg, var(--gold), #ff9a6c);
+}
+.pod.mine {
+  border-color: var(--accent);
+  box-shadow: inset 0 0 0 1px rgba(94, 224, 197, 0.45);
+}
+.podhint {
+  margin-top: 10px;
+}
+
+/* The drill-down. A sheet over the page, not a route: the list around an entry
+   is the context you are reading it in, and navigating away loses the board,
+   the period and the scroll position you had chosen. */
+.lbmodal {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  background: rgba(6, 10, 26, 0.72);
+  backdrop-filter: blur(3px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 18px;
+  overflow-y: auto;
+  animation: lbfade 0.14s ease;
+}
+@keyframes lbfade {
+  from {
+    opacity: 0;
+  }
+}
+.lbsheet {
+  width: 100%;
+  max-width: 520px;
+  background: linear-gradient(180deg, var(--panel), var(--bg2, var(--bg)));
+  border: 1px solid var(--line);
+  border-radius: 20px;
+  box-shadow: var(--shadow);
+  padding: 18px;
+  margin: auto;
+  animation: lbrise 0.18s ease;
+}
+.lbsheet:focus {
+  outline: none;
+}
+@keyframes lbrise {
+  from {
+    transform: translateY(14px);
+    opacity: 0;
+  }
+}
+.lbhead {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+}
+.lbhead h3 {
+  margin: 0;
+  font-size: 19px;
+  line-height: 1.25;
+  overflow-wrap: anywhere;
+}
+.lbwho {
+  flex: 1;
+  min-width: 0;
+}
+.lbrank {
+  font-size: 24px;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+  color: var(--muted);
+  line-height: 1.2;
+  flex: none;
+}
+.lbrank.r1 {
+  color: var(--gold);
+}
+.lbx {
+  appearance: none;
+  background: var(--panel2);
+  border: 1px solid var(--line);
+  color: var(--muted);
+  font-family: inherit;
+  font-size: 15px;
+  line-height: 1;
+  width: 32px;
+  height: 32px;
+  border-radius: 10px;
+  cursor: pointer;
+  flex: none;
+}
+.lbx:hover {
+  color: var(--ink);
+}
+.lbheadline {
+  display: flex;
+  align-items: baseline;
+  justify-content: center;
+  gap: 9px;
+  margin: 14px 0 4px;
+}
+.lbheadline b {
+  font-size: 40px;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+  color: var(--accent);
+}
+.lbheadline span {
+  font-size: 13px;
+  color: var(--muted);
+}
+/* Both selectors are doubled up on purpose: `.kpis` and `.kpinum` are declared
+   further down this file, so a single-class override here would lose the
+   cascade to them and silently do nothing. The tiles are narrower than the
+   analytics ones because there are four or five of them, not three, and they
+   sit inside a 520px sheet rather than across a full-width page. */
+.kpis.lbstats {
+  grid-template-columns: repeat(auto-fit, minmax(112px, 1fr));
+}
+.kpis.lbstats .kpinum {
+  font-size: 20px;
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 520px) {
+  .pod {
+    padding: 10px 6px 0;
+  }
+  .pod .face {
+    width: 40px;
+    height: 40px;
+    font-size: 15px;
+  }
+  .pod .who {
+    font-size: 12px;
+  }
+  .pod .step b {
+    font-size: 18px;
+  }
+  .lbheadline b {
+    font-size: 32px;
+  }
 }
 
 /* Analytics dashboard: KPI tiles and the funnel bars. */

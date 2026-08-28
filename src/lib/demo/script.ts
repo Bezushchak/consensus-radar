@@ -86,9 +86,16 @@ export const DEMO = {
     { id: "dana", name: "Dana", value: 27 },
     { id: "lea", name: "Lea", value: 34 },
   ],
+  /**
+   * All three on the same side, because the rule the demo is teaching is that
+   * the side bet pays only when a team is unanimous. This used to be a 2-1 split
+   * that scored anyway under the old majority rule — showing that now would
+   * teach the opposite of what the reveal card says, so the demo agrees with the
+   * engine and the test below holds it there.
+   */
   bets: [
     { id: "ira", name: "Ira", side: "left" as const, correct: true },
-    { id: "yuri", name: "Yuri", side: "right" as const, correct: false },
+    { id: "yuri", name: "Yuri", side: "left" as const, correct: true },
     { id: "sam", name: "Sam", side: "left" as const, correct: true },
   ],
 };

@@ -36,7 +36,10 @@ export const STRINGS: Dict = {
   catAnalytics: { ua: "Для аналітиків", en: "Analytics team" },
   targetLabel: { ua: "Грати до (очок)", en: "Play to (points)" },
   endless: { ua: "Без ліміту", en: "Endless" },
-  betsLabel: { ua: "Ставки для інших команд (+1 за вгаданий бік)", en: "Side bets for other teams (+1 for the right side)" },
+  betsLabel: {
+    ua: "Ставки для інших команд (+1, якщо вся команда назве один правильний бік)",
+    en: "Side bets for other teams (+1 if the whole team agrees on the right side)",
+  },
   createBtn: { ua: "Створити кімнату", en: "Create room" },
   codeLabel: { ua: "Код кімнати", en: "Room code" },
   joinBtn: { ua: "Увійти в кімнату", en: "Join room" },
@@ -140,11 +143,28 @@ export const STRINGS: Dict = {
     ua: "Ви бачите їхні маркери — вони з'являються на радарі. Свої вони одне одного не бачать.",
     en: "You can see their markers appear on the dial. They cannot see each other's.",
   },
-  betTitle: { ua: "Ваша ставка", en: "Your side bet" },
-  betSub: { ua: "З якого боку від таємної точки стане маркер?", en: "Which side of the secret spot will their marker land on?" },
+  betTitle: { ua: "Ставка команди", en: "Your team's side bet" },
+  betSub: {
+    ua: "З якого боку від таємної точки стане маркер? Очко дається лише якщо вся команда назве один і той самий бік — і він виявиться правильним. Домовтеся вголос.",
+    en: "Which side of the secret spot will their marker land on? The point only counts if your whole team calls the same side and that side is right. Agree out loud first.",
+  },
   betLeft: { ua: "◀ Лівіше", en: "◀ To the left" },
   betRight: { ua: "Правіше ▶", en: "To the right ▶" },
   betPlaced: { ua: "Ставка зроблена: {side}", en: "Bet placed: {side}" },
+  // The team looking at itself, before the reveal. Only agreement can be shown
+  // here — whether the side is right is exactly the secret being kept.
+  betSplit: {
+    ua: "Команда назвала різні боки — так ставка не зіграє. Домовтеся й перетисніть кнопку.",
+    en: "Your team has called different sides, so the bet pays nothing. Agree on one and tap again.",
+  },
+  betAgreed: { ua: "Уся команда за один бік: {side}.", en: "The whole team called the same side: {side}." },
+  betSplitLost: {
+    ua: "Ваша команда назвала різні боки, тож очка немає — навіть у тих, хто вгадав.",
+    en: "Your team called different sides, so there is no point — not even for those who got it right.",
+  },
+  // How much of the guessing team's answer is on the dial so far. The average
+  // is the number the bet turns on, and it is still moving.
+  avgFrom: { ua: "середнє з {n} із {total}", en: "average of {n} of {total}" },
   sideLeft: { ua: "лівіше", en: "left" },
   sideRight: { ua: "правіше", en: "right" },
   revealNow: { ua: "Відкрити зараз", en: "Reveal now" },
@@ -185,7 +205,7 @@ export const STRINGS: Dict = {
   betRight2: { ua: "вгадав бік", en: "called it" },
   betWrong: { ua: "мимо", en: "missed" },
   nextBtn: { ua: "Наступний раунд", en: "Next round" },
-  waitNext: { ua: "Хост запускає наступний раунд…", en: "The host is starting the next round…" },
+  waitNext: { ua: "{name} запускає наступний раунд…", en: "{name} is starting the next round…" },
 
   // ---- scoreboard / winner ----
   scoresTitle: { ua: "Рахунок", en: "Scores" },
@@ -256,6 +276,18 @@ export const STRINGS: Dict = {
     en: "Two different people with the same name are two different rows; to tell them apart each gets a short device code next to the name (e.g. \"Dmytro · K7QM\"). Your own row is highlighted.",
   },
 
+  // The podium and the drill-down card. Every board drops columns to fit on a
+  // phone, so the card is where the dropped ones live.
+  lbTapHint: {
+    ua: "Тисніть на будь-яке місце — покажемо всю статистику.",
+    en: "Tap any place — or any row — for its full stats.",
+  },
+  lbRankOf: { ua: "{rank} місце з {total}", en: "Rank {rank} of {total}" },
+  lbLowerBetter: { ua: "менше — краще", en: "lower is better" },
+  lbTargetWas: { ua: "точка була на", en: "the spot was at" },
+  lbMarkerWas: { ua: "маркер став на", en: "the marker landed at" },
+  lbClose: { ua: "Закрити", en: "Close" },
+
   // ---------------- how to play ----------------
   howToLink: { ua: "Як грати", en: "How to play" },
   howToTitle: { ua: "Як грати", en: "How to play" },
@@ -277,8 +309,8 @@ export const STRINGS: Dict = {
     en: "A clue may not contain numbers — not as digits (\"50%\"), not spelled out (\"half\", \"forty\"), not glued inside a word. At most six words carry meaning; articles, prepositions and conjunctions are free. The same rules run in the browser and on the server, so the form never accepts something the server would refuse.",
   },
   howToBetsRules: {
-    ua: "Поки одна команда відгадує, інші бачать clue і маркери, що з'являються на радарі, та ставлять на бік: маркер стане лівіше чи правіше від таємної точки? Якщо більшість команди вгадала — плюс очко. А от гравці команди, що відгадує, маркерів одне одного до розкриття не бачать: інакше раунд міряв би згоду, а не калібрування.",
-    en: "While one team guesses, the others see the clue and watch the markers appear on the dial, then call the side: will the marker land left or right of the secret spot? If most of the team calls it right, they get a point. The guessing team, though, cannot see each other's markers before the reveal — otherwise the round would measure agreement rather than calibration.",
+    ua: "Поки одна команда відгадує, інші бачать clue, маркери, що з'являються на радарі, та підсвічене середнє з них — саме на ньому раунд і зіграє. Далі ставлять на бік: середній маркер стане лівіше чи правіше від таємної точки? Очко дається, лише якщо вся команда назве один і той самий бік — і він виявиться правильним; різні боки означають нуль, тому спершу треба домовитися вголос. А от гравці команди, що відгадує, маркерів одне одного до розкриття не бачать: інакше раунд міряв би згоду, а не калібрування.",
+    en: "While one team guesses, the others see the clue, watch the markers appear on the dial, and see the average of them highlighted — that average is what the round is actually scored on. Then they call the side: will that average marker land left or right of the secret spot? The point only counts if the whole team calls the same side and that side is right; different sides mean nothing at all, so the team has to agree out loud first. The guessing team, though, cannot see each other's markers before the reveal — otherwise the round would measure agreement rather than calibration.",
   },
 
   // The demo player's own furniture.
@@ -293,6 +325,12 @@ export const STRINGS: Dict = {
     ua: "Хост натомість тисне «Створити кімнату» — тут ми заходимо в готову.",
     en: "The host presses \"Create room\" instead — here we're joining one that exists.",
   },
+  // `betsLabel` states the whole unanimity rule, which is what the checkbox that
+  // sets it needs and four wrapped lines too many for a settings summary inside a
+  // phone-sized frame. The demo teaches the rule where it matters instead — at
+  // the betting step and again on the reveal card — so here it only has to say
+  // the setting is on.
+  demoBetsOn: { ua: "Ставки: увімкнено", en: "Side bets: on" },
   demoRoleNew: { ua: "приєднується", en: "joining" },
   demoRoleClue: { ua: "дає clue", en: "clue-giver" },
   demoRoleGuess: { ua: "відгадує", en: "guessing" },
@@ -354,8 +392,8 @@ export const STRINGS: Dict = {
     en: "The reveal. The team averaged {marker}, the spot was at {target}: a small miss, {points} points.",
   },
   demoReveal2: {
-    ua: "Хто куди ставив — видно всім. Ставки теж: більшість «Шуму» вгадала бік, тож і їм очко.",
-    en: "Who placed what is public. So are the bets: most of Noise called the side, so they score too.",
+    ua: "Хто куди ставив — видно всім. Ставки теж: «Шум» назвав один бік — і вгадав, тож і їм очко.",
+    en: "Who placed what is public. So are the bets: Noise all called the same side and got it right, so they score too.",
   },
   demoNext: {
     ua: "Далі новий раунд: інша шкала, clue дає інша людина. І так до цілі.",

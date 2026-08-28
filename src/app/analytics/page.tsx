@@ -46,6 +46,7 @@ const STEP_LABELS: Record<string, string> = {
 const SIDE_LABELS: Record<string, string> = {
   join_open: "Opened the join form",
   leaderboard_open: "Opened the leaderboard",
+  lb_row_open: "Opened one leaderboard entry",
   howto_open: "Opened how-to-play",
   lang_switched: "Switched language",
   bet_placed: "Placed a bet on the other team",

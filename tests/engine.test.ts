@@ -6,6 +6,7 @@ import { test } from "node:test";
 import {
   AUTO_MARKER,
   AWAY_AFTER_MS,
+  BET_POINTS,
   EXPIRE_GRACE_MS,
   MAX_TEAMS,
   MIN_TEAM_SIZE,
@@ -13,6 +14,7 @@ import {
   TIMER_FINAL_AT,
   TIMER_WARN_AT,
   averageMarker,
+  betConsensus,
   betIsCorrect,
   canSkipRound,
   canStartGame,
@@ -29,6 +31,7 @@ import {
   generateRoomCode,
   hostIsAway,
   makeTeams,
+  mayControlRound,
   mayExpire,
   nextTeamIndex,
   normalizeCode,
@@ -41,6 +44,7 @@ import {
   scoreFor,
   secondsLeft,
   seenRecently,
+  teamBetPoints,
   teamSize,
   teamsAtGoal,
   timerLevel,
@@ -916,6 +920,21 @@ test("the demo's arithmetic is the arithmetic the engine would do", () => {
     );
   }
 
+  // The bettors are all on one team, so the demo's own bets have to survive the
+  // unanimity rule the narration claims they satisfy. This was a 2-1 split back
+  // when a majority paid; the narration says they scored, so under the current
+  // rule a split here would teach a rule the game does not have.
+  assert.equal(
+    betConsensus(DEMO.bets.map((b) => b.side)),
+    "left",
+    "the demo's bettors have to agree, because the reveal tells the viewer they scored"
+  );
+  assert.equal(
+    teamBetPoints(DEMO.bets),
+    BET_POINTS,
+    "and agreeing on the correct side is what earns the point the card shows"
+  );
+
   // The room code is one the real join box would accept unchanged, and avoids
   // the characters the generator leaves out because they are read wrong aloud.
   assert.equal(DEMO.code, normalizeCode(DEMO.code));
@@ -1208,6 +1227,68 @@ test("a round can be rescued right up to the reveal, and not after", () => {
   assert.equal(canSkipRound("clue"), true, "the dead end — the guessers have no button yet");
   assert.equal(canSkipRound("guess"), true, "kinder than a reveal that can cost two points");
   assert.equal(canSkipRound("reveal"), false, "already scored; `next` is the way on");
+});
+
+test("the round's buttons belong to its clue-giver, and to nobody else", () => {
+  const giver = player({ id: "cg", last_seen_at: ago(30_000) });
+  const host = player({ id: "h", is_host: true, team_id: "t2", last_seen_at: ago(30_000) });
+  const mate = player({ id: "m", last_seen_at: ago(30_000) });
+  const roster = [giver, host, mate];
+  const round = { clue_giver_id: "cg" };
+
+  assert.equal(mayControlRound(round, "cg", roster, NOW), true, "their own turn to end");
+
+  // The two that used to be able to and now cannot. The host is the interesting
+  // one: they are usually on another team, so their button ended somebody
+  // else's turn for reasons that team was not part of.
+  assert.equal(mayControlRound(round, "h", roster, NOW), false, "the host holds no round");
+  assert.equal(mayControlRound(round, "m", roster, NOW), false, "nor does a teammate");
+
+  // The escape hatch, and note who it opens to: anybody. Not the host — the
+  // host may well be the person who walked away.
+  const gone = [player({ id: "cg", last_seen_at: ago(600_000) }), host, mate];
+  assert.equal(mayControlRound(round, "m", gone, NOW), true, "a quiet clue-giver frees the round");
+  assert.equal(mayControlRound(round, "h", gone, NOW), true);
+
+  // Same dead end, two other shapes it arrives in: the id was nulled when the
+  // player row went, or the row is gone and the null has not landed yet.
+  assert.equal(mayControlRound({ clue_giver_id: null }, "m", roster, NOW), true);
+  assert.equal(mayControlRound({ clue_giver_id: "ghost" }, "m", roster, NOW), true);
+
+  // A clue-giver whose own id is null must not match on `null === null`: that
+  // would hand the round to one arbitrary player instead of to everybody, and
+  // the branch order in `mayControlRound` is the only thing preventing it.
+  assert.equal(
+    mayControlRound({ clue_giver_id: null }, "cg", roster, NOW),
+    true,
+    "still true, but because the seat is empty rather than because they hold it"
+  );
+});
+
+test("a side bet pays only if the whole team called the same side", () => {
+  assert.equal(teamBetPoints([{ correct: true }, { correct: true }]), BET_POINTS);
+  assert.equal(teamBetPoints([{ correct: true }]), BET_POINTS, "a team of one still agrees");
+
+  // The bug this rule exists for: one player clicks left, the other right, and
+  // under a majority rule the point could not be lost. A bet you cannot lose is
+  // not a bet, so there was nothing to discuss and nothing to get wrong.
+  assert.equal(teamBetPoints([{ correct: true }, { correct: false }]), 0, "split pays nothing");
+  assert.equal(teamBetPoints([{ correct: false }, { correct: false }]), 0);
+
+  // Abstaining is silence, not opposition: only bets actually placed are passed
+  // in, so two people who agree are not punished for a third who never voted.
+  // Same treatment the auto-marker gives a guesser who never moved the slider.
+  assert.equal(teamBetPoints([]), 0, "nobody bet, so there is nothing to pay");
+});
+
+test("what a betting team sees about itself before the reveal", () => {
+  // Deliberately says nothing about being right — the target is still secret,
+  // so the only question answerable before the reveal is whether they agree.
+  assert.equal(betConsensus([]), "none");
+  assert.equal(betConsensus(["left"]), "left");
+  assert.equal(betConsensus(["right", "right", "right"]), "right");
+  assert.equal(betConsensus(["left", "right"]), "split", "the state worth a warning");
+  assert.equal(betConsensus(["right", "right", "left"]), "split");
 });
 
 test("the end-of-game card is a fold over reveals the table has already seen", () => {

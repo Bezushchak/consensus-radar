@@ -289,6 +289,41 @@ still dethroned is a heartbeat bug, not a person leaving. `timer_expired` has no
 click label to cross-check against at all, because nobody presses anything —
 which is exactly why it needed to be an event.
 
+### 11 — Does anybody read past the podium
+
+- **Type:** Insights, with the formula editor (`Σ`)
+- **Metric A:** `lb_row_open`, Total Events. **Metric B:** `leaderboard_open`,
+  Unique Users.
+- **Formula:** `A/B` — cards opened per visit
+- **Breakdown:** `board`, then a second chart broken down by `rank`
+
+The leaderboard is the one page whose whole job is to be looked at, so the only
+question worth asking of it is whether looking goes anywhere. `A/B` is cards
+opened per visit: below about one, the podium is the entire product and the table
+under it is decoration; above two or three, people are comparing entries and the
+table is doing real work.
+
+The `rank` breakdown is the sharper half. `lb_row_open` fires with the displayed
+rank, so ranks 1–3 are the podium and 4-plus is somebody who scrolled and went
+hunting — usually for their own row. If that tail is empty, the fifty rows the
+API returns are fifty rows nobody reads, and the limit could come down. The
+`board` breakdown answers the other half: **Rounds** is the only board whose card
+draws a dial, so if it leads by a wide margin the picture is what people came
+for, and if it trails, the dial is not worth the pixels.
+
+**Mind the units**, same trap as report 10 from the other direction: A is total
+events and B is unique users on purpose, because "per visit" is the question.
+Making both Total Events would divide by the number of times a tab re-opened the
+page, and making both Unique Users would throw away the count that matters.
+
+**Matching click labels**, for report 7: `lb-podium-1` / `-2` / `-3` are the three
+steps, `lb-detail-close` and `lb-detail-done` are the two ways out of a card (the
+✕ and the button — a lopsided split says one of them is hard to find), and
+`winner-leaderboard` is the link out of the end-of-game screen, which is the only
+path from finishing a game to looking at the board. Table rows are not labelled
+controls, so `click` does not see them at all — `lb_row_open` is the only thing
+that counts a row.
+
 **If you are on the free plan and can only keep five:** the host funnel, the guest
 funnel, the error queue, round quality, and setup time. Configuration, clicks and
 the rescue-hatch ratios can be rebuilt in a minute when a specific question comes

@@ -50,12 +50,13 @@ Nine funnel events, in the order a player meets them:
 | `round_revealed` | The reveal appears | **every device watching** | `round`, `points`, `distance` (`-1` when unknown) |
 | `game_finished` | The winner screen appears | every device | `rounds`, `score` |
 
-And twelve that are useful but never gate a later step:
+And thirteen that are useful but never gate a later step:
 
 | Event | Props | Note |
 | --- | --- | --- |
 | `join_open` | `players` | Saw the join screen. May or may not join. |
 | `leaderboard_open` | — | Once per session per page. |
+| `lb_row_open` | `board`, `rank` | Opened one leaderboard entry — a podium step or a table row, both of which open the same card. Fires every time, not once per session, because the interesting figure is how many entries one visit opens. `board` is `teams` / `rounds` / `players` / `scales`; `rank` is the displayed rank, so `1`–`3` is somebody reading the podium and `4`+ is somebody who went looking. |
 | `howto_open` | — | Opened `/how-to-play`. Once per session. Not a funnel step on purpose: reading the rules is not on the way to playing, so a step nobody has to take would read as a 90% drop-off. |
 | `lang_switched` | `to` | |
 | `bet_placed` | `side`, `round`, `markers` | Only when side bets are enabled for the room. `markers` is how many of the guessing team's markers were on screen when the call was made. |

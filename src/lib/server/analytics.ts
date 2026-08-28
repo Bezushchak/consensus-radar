@@ -45,6 +45,12 @@ export const FUNNEL = [
 const SIDE_EVENTS = [
   "join_open", // saw the join screen (may or may not join)
   "leaderboard_open",
+  // Opened one leaderboard entry. Against `leaderboard_open` it answers the
+  // only question the podium rework raises: does anybody look past the top of
+  // the list. `props.board` says which of the four is worth drilling into and
+  // `props.rank` says whether people open the winner or hunt for their own row
+  // — if the ranks clustered at 1..3 the table below the podium is dead weight.
+  "lb_row_open", // props.board, props.rank
   // Opened the tutorial. Not a funnel step on purpose: reading the rules is
   // not on the way to playing, and a step nobody has to take would read as a
   // 90% drop-off. It is worth knowing on its own, though — against `app_open`
